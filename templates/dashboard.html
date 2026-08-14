@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spareprice Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Spareprice</p>
+        <h1>Spare Part Price Dashboard</h1>
+      </div>
+      <div class="toolbar">
+        <form action="{{ url_for('check_now') }}" method="post">
+          <button data-job-button data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
+            {% if job.running %}Checking...{% else %}Check All Prices{% endif %}
+          </button>
+        </form>
+        <form action="{{ url_for('discover_all_now') }}" method="post">
+          <button data-job-button data-running-label="Discovering..." data-start-label="Discovering all available model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
+            {% if job.running %}Working...{% else %}Discover All Models{% endif %}
+          </button>
+        </form>
+        <form class="filters" method="get">
+          <input name="q" value="{{ search }}" placeholder="Search model or part">
+          <select name="brand">
+            <option value="">All brands</option>
+            {% for brand in brands %}
+              <option value="{{ brand }}" {% if selected_brand == brand %}selected{% endif %}>{{ brand }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Filter</button>
+        </form>
+      </div>
+    </header>
+
+    <main>
+      <section id="jobStatus" class="job-status {% if job.running %}running{% endif %}" data-running="{{ 'true' if job.running else 'false' }}">
+        <strong>{{ job.message }}</strong>
+        <span>
+          {% if job.started_at %}Started {{ job.started_at|localdate }}{% else %}Click the button to scrape every configured device and spare part.{% endif %}
+        </span>
+      </section>
+
+      <section class="stats" aria-label="Dashboard summary">
+        <article>
+          <span>Tracked items</span>
+          <strong>{{ stats.tracked }}</strong>
+        </article>
+        <article>
+          <span>Brands</span>
+          <strong>{{ stats.brands }}</strong>
+        </article>
+        <article>
+          <span>Total latest value</span>
+          <strong>{{ stats.total_value|money("INR") }}</strong>
+        </article>
+        <article>
+          <span>Last successful check</span>
+          <strong>{{ stats.last_success|localdate }}</strong>
+        </article>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-heading">
+          <h2>Price Trend</h2>
+          <p>{{ chart_note }}</p>
+        </div>
+        <div class="chart-wrap">
+          <svg id="trendChart" role="img" aria-label="Price trend chart"></svg>
+        </div>
+        <div id="chartLegend" class="chart-legend"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Latest Prices</h2>
+          <p>{{ latest|length }} current model and spare-part prices</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Brand</th>
+                <th>Model</th>
+                <th>Spare Part</th>
+                <th>Latest Price</th>
+                <th>Last Checked</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in latest %}
+                <tr>
+                  <td><span class="brand">{{ row.brand }}</span></td>
+                  <td>{{ row.model }}</td>
+                  <td>{{ row.part }}</td>
+                  <td class="price">{{ row.price_value|money(row.currency) }}</td>
+                  <td>{{ row.date|localdate }}</td>
+                  <td><a href="{{ row.url }}" target="_blank" rel="noreferrer">Open</a></td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6" class="empty">No matching prices yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Recent Checks</h2>
+          <p>Last 100 records, including errors</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Brand</th>
+                <th>Model</th>
+                <th>Part</th>
+                <th>Recorded Text</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in history %}
+                <tr>
+                  <td>{{ row.date|localdate }}</td>
+                  <td>{{ row.brand }}</td>
+                  <td>{{ row.model }}</td>
+                  <td>{{ row.part }}</td>
+                  <td>{{ row.price or row.error or "-" }}</td>
+                  <td><span class="status {{ row.status }}">{{ row.status }}</span></td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6" class="empty">No checks recorded yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      window.SPAREPRICE_SERIES = {{ chart_json|safe }};
+    </script>
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+  </body>
+</html>

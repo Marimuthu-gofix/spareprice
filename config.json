@@ -1,0 +1,55 @@
+{
+  "database_path": "price_history.sqlite3",
+  "delay_seconds": 6,
+  "timeout_ms": 45000,
+  "headless": true,
+  "entries": [
+    {
+      "enabled": true,
+      "brand": "Apple",
+      "model": "iPhone 14",
+      "part": "Battery",
+      "url": "https://support.apple.com/en-in/iphone/repair?services=service",
+      "currency": "INR",
+      "actions": [
+        {
+          "type": "select_option",
+          "selector": "select.device-dropdown",
+          "label": "iPhone 14"
+        },
+        {
+          "type": "select_option",
+          "selector": "select.model-dropdown",
+          "label": "iPhone 14"
+        }
+      ],
+      "price_selector": "body"
+    },
+    {
+      "enabled": true,
+      "brand": "Samsung",
+      "model": "Galaxy S23",
+      "part": "Main Screen Assembly",
+      "url": "https://www.samsung.com/in/support/spare-part-pricing-list-for-repair/",
+      "currency": "INR",
+      "actions": [
+        {
+          "type": "click",
+          "selector": "a.select-series"
+        },
+        {
+          "type": "click",
+          "selector": "input[name=\"series\"][value=\"galaxy-s\"]",
+          "force": true
+        },
+        {
+          "type": "click",
+          "selector": "input[name=\"models\"][value=\"Galaxy S23\"]",
+          "force": true,
+          "post_delay_ms": 3000
+        }
+      ],
+      "price_selector": "body"
+    }
+  ]
+}
