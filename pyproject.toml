@@ -1,2 +1,10 @@
+[project]
+name = "spareprice"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "Flask>=3.0.0",
+]
+
 [tool.vercel]
 entrypoint = "dashboard:app"
