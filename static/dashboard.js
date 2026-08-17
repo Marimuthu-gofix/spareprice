@@ -163,7 +163,7 @@
     jobButtons.forEach((button) => {
       button.disabled = disabled;
       if (!disabled) {
-        button.textContent = button.id === "checkAllButton" ? "Check All Prices" : "Discover All Models";
+        button.textContent = button.id === "checkAllButton" ? "Check All Prices" : "Discover All Mobiles";
       }
     });
   }

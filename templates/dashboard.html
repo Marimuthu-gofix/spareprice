@@ -31,6 +31,7 @@
               <option value="{{ brand }}" {% if selected_brand == brand %}selected{% endif %}>{{ brand }}</option>
             {% endfor %}
           </select>
+          <input type="hidden" name="per_page" value="{{ selected_per_page }}">
           <button type="submit">Filter</button>
         </form>
       </div>
@@ -77,7 +78,13 @@
       <section class="panel">
         <div class="panel-heading">
           <h2>Latest Prices</h2>
-          <p>{{ latest|length }} current model and spare-part prices</p>
+          <p>
+            {% if pagination.total %}
+              Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} prices
+            {% else %}
+              0 current model and spare-part prices
+            {% endif %}
+          </p>
         </div>
         <div class="table-wrap">
           <table>
@@ -106,6 +113,41 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <div class="table-footer">
+          <form class="filters footer-filters" method="get">
+            <input name="q" value="{{ search }}" placeholder="Search model or part">
+            <select name="brand">
+              <option value="">All brands</option>
+              {% for brand in brands %}
+                <option value="{{ brand }}" {% if selected_brand == brand %}selected{% endif %}>{{ brand }}</option>
+              {% endfor %}
+            </select>
+            <select name="per_page">
+              {% for option in per_page_options %}
+                <option value="{{ option }}" {% if selected_per_page == option %}selected{% endif %}>{{ option }} rows</option>
+              {% endfor %}
+            </select>
+            <input type="hidden" name="page" value="1">
+            <button type="submit">Apply</button>
+          </form>
+          <nav class="pagination" aria-label="Latest prices pages">
+            {% if pagination.has_prev %}
+              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=1) }}">First</a>
+              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=pagination.prev_page) }}">Prev</a>
+            {% else %}
+              <span>First</span>
+              <span>Prev</span>
+            {% endif %}
+            <strong>Page {{ pagination.page }} of {{ pagination.total_pages }}</strong>
+            {% if pagination.has_next %}
+              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=pagination.next_page) }}">Next</a>
+              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=pagination.total_pages) }}">Last</a>
+            {% else %}
+              <span>Next</span>
+              <span>Last</span>
+            {% endif %}
+          </nav>
         </div>
       </section>
 

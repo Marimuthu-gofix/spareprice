@@ -66,6 +66,10 @@ h2 {
   gap: 10px;
 }
 
+.footer-filters {
+  grid-template-columns: minmax(180px, 280px) 150px 130px 86px;
+}
+
 input,
 select,
 button {
@@ -220,6 +224,47 @@ main {
   overflow-x: auto;
 }
 
+.table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  background: #f8fafc;
+  border-top: 1px solid var(--line);
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.pagination a,
+.pagination span,
+.pagination strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 13px;
+}
+
+.pagination span {
+  color: #9aa7b9;
+}
+
+.pagination strong {
+  color: var(--ink);
+  font-weight: 800;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -293,9 +338,15 @@ a {
   }
 
   .toolbar,
-  .job-status {
+  .job-status,
+  .table-footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .pagination {
+    justify-content: space-between;
+    white-space: normal;
   }
 
   main {

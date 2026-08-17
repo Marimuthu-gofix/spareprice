@@ -65,7 +65,10 @@ def localdate_filter(value: str | None) -> str:
         return value
 
 
-def load_dashboard(search: str = "", brand: str = "") -> dict[str, Any]:
+PER_PAGE_OPTIONS = [25, 50, 100, 250]
+
+
+def load_dashboard(search: str = "", brand: str = "", page: int = 1, per_page: int = 100) -> dict[str, Any]:
     conn = connect()
     rows = conn.execute(
         """
@@ -101,6 +104,14 @@ def load_dashboard(search: str = "", brand: str = "") -> dict[str, Any]:
             in " ".join([row["brand"], row["model"], row["part"], row["price"] or "", row["status"]]).lower()
         ]
 
+    latest_total = len(latest)
+    per_page = per_page if per_page in PER_PAGE_OPTIONS else 100
+    total_pages = max(1, (latest_total + per_page - 1) // per_page)
+    page = min(max(page, 1), total_pages)
+    page_start = (page - 1) * per_page
+    page_end = page_start + per_page
+    paged_latest = latest[page_start:page_end]
+
     chart_limit = 24 if search else 12
     chart_candidates = sorted(latest, key=lambda r: r["date"], reverse=True)[:chart_limit]
     chart_keys = {(row["brand"], row["model"], row["part"]) for row in chart_candidates}
@@ -133,9 +144,22 @@ def load_dashboard(search: str = "", brand: str = "") -> dict[str, Any]:
         chart_note += f" from {len(latest)} matching prices. Search a model or spare part for a focused chart."
 
     return {
-        "latest": latest,
+        "latest": paged_latest,
         "history": rows[:100],
         "brands": brands,
+        "per_page_options": PER_PAGE_OPTIONS,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": latest_total,
+            "total_pages": total_pages,
+            "start": page_start + 1 if latest_total else 0,
+            "end": min(page_end, latest_total),
+            "has_prev": page > 1,
+            "has_next": page < total_pages,
+            "prev_page": max(1, page - 1),
+            "next_page": min(total_pages, page + 1),
+        },
         "chart_json": json.dumps(chart_series),
         "chart_note": chart_note,
         "stats": {
@@ -154,8 +178,24 @@ def load_dashboard(search: str = "", brand: str = "") -> dict[str, Any]:
 def index() -> str:
     search = request.args.get("q", "").strip()
     brand = request.args.get("brand", "").strip()
-    data = load_dashboard(search=search, brand=brand)
-    return render_template("dashboard.html", search=search, selected_brand=brand, **data)
+    page = parse_positive_int(request.args.get("page"), 1)
+    per_page = parse_positive_int(request.args.get("per_page"), 100)
+    data = load_dashboard(search=search, brand=brand, page=page, per_page=per_page)
+    return render_template(
+        "dashboard.html",
+        search=search,
+        selected_brand=brand,
+        selected_per_page=data["pagination"]["per_page"],
+        **data,
+    )
+
+
+def parse_positive_int(value: str | None, default: int) -> int:
+    try:
+        parsed = int(value or "")
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
 
 
 @app.post("/check-now")
