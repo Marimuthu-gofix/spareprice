@@ -7,6 +7,7 @@
   const colors = ["#2563eb", "#0f8f68", "#b45309", "#7c3aed", "#dc2626", "#0891b2"];
 
   function draw() {
+    if (!svg) return;
     const width = svg.clientWidth || 900;
     const height = svg.clientHeight || 320;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);

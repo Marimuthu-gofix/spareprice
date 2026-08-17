@@ -111,6 +111,17 @@ python spareprice.py discover-all --brand realme --max-models 1 --delay 1
 
 Keep the delay conservative. Full-catalog scraping is more likely to trigger blocking or ToS issues than your original small shortlist.
 
+## Vercel Deployment
+
+This project is ready to deploy as a Flask app on Vercel. Vercel uses `pyproject.toml` and this configured entrypoint:
+
+```toml
+[tool.vercel]
+entrypoint = "dashboard:app"
+```
+
+The hosted Vercel dashboard is read-only. It displays the committed `price_history.sqlite3` data, but the scrape buttons are disabled because Vercel serverless functions are not a good place to run long Playwright browser crawls or write a persistent SQLite database. To refresh hosted data, run discovery locally, commit `price_history.sqlite3` and `price_history.csv`, then push to GitHub.
+
 ## Daily Schedule
 
 ### Windows Task Scheduler

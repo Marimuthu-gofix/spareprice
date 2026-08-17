@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from flask import Flask, jsonify, redirect, render_template, request, url_for
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "price_history.sqlite3"
 DEFAULT_CONFIG = ROOT / "config.json"
+HOSTED_READ_ONLY = bool(os.environ.get("VERCEL"))
 
 app = Flask(__name__)
 job_lock = threading.Lock()
@@ -171,6 +173,7 @@ def load_dashboard(search: str = "", brand: str = "", page: int = 1, per_page: i
             "last_success": successful_rows[0]["date"] if successful_rows else None,
         },
         "job": current_job_state(),
+        "hosted_read_only": HOSTED_READ_ONLY,
     }
 
 
@@ -200,6 +203,8 @@ def parse_positive_int(value: str | None, default: int) -> int:
 
 @app.post("/check-now")
 def check_now() -> Any:
+    if HOSTED_READ_ONLY:
+        return hosted_read_only_response()
     started = start_job("shortlist")
     if request.headers.get("Accept") == "application/json":
         return jsonify(current_job_state()), (202 if started else 409)
@@ -208,6 +213,8 @@ def check_now() -> Any:
 
 @app.post("/discover-all")
 def discover_all_now() -> Any:
+    if HOSTED_READ_ONLY:
+        return hosted_read_only_response()
     started = start_job("catalog")
     if request.headers.get("Accept") == "application/json":
         return jsonify(current_job_state()), (202 if started else 409)
@@ -217,6 +224,15 @@ def discover_all_now() -> Any:
 @app.get("/job-status")
 def job_status() -> Any:
     return jsonify(current_job_state())
+
+
+def hosted_read_only_response() -> Any:
+    payload = current_job_state()
+    payload["message"] = "Hosted dashboard is read-only"
+    payload["output"] = "Run the scraper locally, commit the updated database, then push to refresh Vercel."
+    if request.headers.get("Accept") == "application/json":
+        return jsonify(payload), 409
+    return redirect(url_for("index"))
 
 
 def current_job_state() -> dict[str, Any]:

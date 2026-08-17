@@ -14,12 +14,12 @@
       </div>
       <div class="toolbar">
         <form action="{{ url_for('check_now') }}" method="post">
-          <button data-job-button data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
+          <button data-job-button data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running or hosted_read_only %}disabled{% endif %}>
             {% if job.running %}Checking...{% else %}Check All Prices{% endif %}
           </button>
         </form>
         <form action="{{ url_for('discover_all_now') }}" method="post">
-          <button data-job-button data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
+          <button data-job-button data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running or hosted_read_only %}disabled{% endif %}>
             {% if job.running %}Working...{% else %}Discover All Mobiles{% endif %}
           </button>
         </form>
@@ -39,9 +39,15 @@
 
     <main>
       <section id="jobStatus" class="job-status {% if job.running %}running{% endif %}" data-running="{{ 'true' if job.running else 'false' }}">
-        <strong>{{ job.message }}</strong>
+        <strong>{% if hosted_read_only %}Hosted dashboard is read-only{% else %}{{ job.message }}{% endif %}</strong>
         <span>
-          {% if job.started_at %}Started {{ job.started_at|localdate }}{% else %}Click a button to scrape configured devices or discover all supported mobiles.{% endif %}
+          {% if hosted_read_only %}
+            Run scraper locally and push the updated database to refresh Vercel.
+          {% elif job.started_at %}
+            Started {{ job.started_at|localdate }}
+          {% else %}
+            Click a button to scrape configured devices or discover all supported mobiles.
+          {% endif %}
         </span>
       </section>
 
@@ -64,7 +70,7 @@
         </article>
       </section>
 
-      <section class="panel chart-panel">
+      <!-- <section class="panel chart-panel">
         <div class="panel-heading">
           <h2>Price Trend</h2>
           <p>{{ chart_note }}</p>
@@ -73,7 +79,7 @@
           <svg id="trendChart" role="img" aria-label="Price trend chart"></svg>
         </div>
         <div id="chartLegend" class="chart-legend"></div>
-      </section>
+      </section> -->
 
       <section class="panel">
         <div class="panel-heading">
