@@ -190,7 +190,7 @@ def start_job(job_type: str) -> bool:
             return False
         message = "Checking all configured devices..."
         if job_type == "catalog":
-            message = "Discovering all available model and spare-part prices..."
+            message = "Discovering all supported mobile model and spare-part prices..."
         job_state.update(
             {
                 "id": str(uuid.uuid4()),
@@ -209,7 +209,7 @@ def start_job(job_type: str) -> bool:
 
 def run_tracker_command(job_type: str) -> None:
     if job_type == "catalog":
-        command = [sys.executable, str(ROOT / "spareprice.py"), "discover-all", "--brand", "all", "--delay", "3"]
+        command = [sys.executable, str(ROOT / "spareprice.py"), "discover-all", "--brand", "all", "--delay", "1"]
     else:
         command = [sys.executable, str(ROOT / "spareprice.py"), "run", "--config", str(DEFAULT_CONFIG)]
     try:
@@ -218,7 +218,7 @@ def run_tracker_command(job_type: str) -> None:
             cwd=ROOT,
             text=True,
             capture_output=True,
-            timeout=900,
+            timeout=3600,
             check=False,
         )
         output = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()

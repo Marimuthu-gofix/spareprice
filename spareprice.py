@@ -18,6 +18,33 @@ PRICE_RE = re.compile(
     r"(?P<currency>₹|Rs\.?|INR|USD|\$|EUR|€|GBP|£)?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
     re.IGNORECASE,
 )
+CURRENCY_PREFIX_PRICE_RE = re.compile(
+    r"(?P<currency>₹|Rs\.?|INR|USD|\$|EUR|€|GBP|£)\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
+    re.IGNORECASE,
+)
+CURRENCY_SUFFIX_PRICE_RE = re.compile(
+    r"(?P<amount>\d[\d,]*(?:\.\d{1,2})?)\s*(?P<currency>Rs\.?|INR|USD|EUR|GBP)",
+    re.IGNORECASE,
+)
+OPPO_MOBILE_SERIES = [
+    "Reno Series",
+    "Find X Series",
+    "A Series",
+    "F Series",
+    "K Series",
+    "Find N Series",
+    "R Series",
+]
+REALME_MOBILE_SERIES = [
+    "GT Series",
+    "Number Series",
+    "P Series",
+    "Narzo Series",
+    "C Series",
+    "Neo Series",
+    "X Series",
+    "U Series",
+]
 
 
 @dataclass(frozen=True)
@@ -220,6 +247,8 @@ async def discover_all(
     delay_seconds: float,
     max_models: int | None,
     samsung_series: str | None,
+    oppo_series: str | None,
+    realme_series: str | None,
 ) -> int:
     from playwright.async_api import async_playwright
 
@@ -232,6 +261,10 @@ async def discover_all(
         await context.close()
         if brand in {"all", "samsung"}:
             await discover_samsung(browser, conn, delay_seconds, max_models, samsung_series)
+        if brand in {"all", "oppo"}:
+            await discover_oppo(browser, conn, delay_seconds, max_models, oppo_series)
+        if brand in {"all", "realme"}:
+            await discover_realme(browser, conn, delay_seconds, max_models, realme_series)
         await browser.close()
     conn.close()
     return 0
@@ -414,6 +447,287 @@ async def load_samsung_models_for_series(page: Any, series_value: str, series_la
     return []
 
 
+async def discover_oppo(
+    browser: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    oppo_series: str | None = None,
+) -> None:
+    url = "https://support.oppo.com/in/spare-parts-price/#/"
+    series_labels = OPPO_MOBILE_SERIES
+    if oppo_series:
+        series_labels = [label for label in series_labels if label == oppo_series]
+    count = 0
+    context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+    page = await context.new_page()
+    page.set_default_timeout(30000)
+    try:
+        await goto_catalog_page(page, url)
+        available_series = set(await visible_texts(page, "li.sidebar-item"))
+        for series_label in series_labels:
+            if series_label not in available_series:
+                LOGGER.warning("OPPO series not found on page: %s", series_label)
+                continue
+            try:
+                await open_oppo_series(page, url, series_label)
+                product_names = await visible_texts(page, ".product-item")
+                LOGGER.info("OPPO %s models found: %s", series_label, len(product_names))
+            except Exception:
+                LOGGER.exception("OPPO series discovery failed: %s", series_label)
+                continue
+
+            for model_name in product_names:
+                if max_models is not None and count >= max_models:
+                    return
+                try:
+                    await open_oppo_series(page, url, series_label)
+                    await click_visible_text(page, ".product-item", model_name)
+                    await page.wait_for_timeout(1800)
+                    raw_rows = await page.locator(".small-item").evaluate_all(
+                        "items => items.map(item => item.innerText.trim()).filter(Boolean)"
+                    )
+                    saved = save_catalog_rows(conn, "OPPO", model_name, url, raw_rows)
+                    if not saved:
+                        raise ValueError("No OPPO spare-part price rows found after selecting model")
+                    count += 1
+                    LOGGER.info("Discovered OPPO %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+                    await asyncio.sleep(delay_seconds)
+                except Exception as exc:
+                    LOGGER.exception("OPPO model discovery failed: %s", model_name)
+                    save_catalog_error(conn, "OPPO", model_name, url, f"{type(exc).__name__}: {exc}")
+    finally:
+        await page.close()
+        await context.close()
+
+
+async def discover_realme(
+    browser: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    realme_series: str | None = None,
+) -> None:
+    url = "https://www.realme.com/in/support/spare-parts-price"
+    series_labels = REALME_MOBILE_SERIES
+    if realme_series:
+        series_labels = [label for label in series_labels if label == realme_series]
+    count = 0
+    context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+    page = await context.new_page()
+    page.set_default_timeout(30000)
+    try:
+        await goto_catalog_page(page, url)
+        for series_label in series_labels:
+            try:
+                await open_realme_series(page, url, series_label)
+                product_names = await visible_texts(page, ".main-right .item")
+                LOGGER.info("realme %s models found: %s", series_label, len(product_names))
+            except Exception:
+                LOGGER.exception("realme series discovery failed: %s", series_label)
+                continue
+
+            for model_name in product_names:
+                if max_models is not None and count >= max_models:
+                    return
+                try:
+                    await open_realme_series(page, url, series_label)
+                    await click_visible_text(page, ".main-right .item", model_name)
+                    await page.wait_for_timeout(2200)
+                    raw_rows = await page.locator(".spare-parts-price .result-collapse .item").evaluate_all(
+                        "items => items.map(item => item.innerText.trim()).filter(Boolean)"
+                    )
+                    saved = save_catalog_rows(conn, "realme", model_name, url, raw_rows)
+                    if not saved:
+                        raise ValueError("No realme spare-part price rows found after selecting model")
+                    count += 1
+                    LOGGER.info("Discovered realme %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+                    await asyncio.sleep(delay_seconds)
+                except Exception as exc:
+                    LOGGER.exception("realme model discovery failed: %s", model_name)
+                    save_catalog_error(conn, "realme", model_name, url, f"{type(exc).__name__}: {exc}")
+    finally:
+        await page.close()
+        await context.close()
+
+
+async def goto_catalog_page(page: Any, url: str) -> None:
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    except Exception as exc:
+        LOGGER.warning("Page navigation timed out; checking whether content is usable: %s", url)
+        await page.wait_for_timeout(3000)
+        if not await page.locator("body").count():
+            raise exc
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        LOGGER.info("Continuing after networkidle timeout: %s", url)
+    await dismiss_common_popups(page)
+    await page.wait_for_timeout(1200)
+
+
+async def open_oppo_series(page: Any, url: str, series_label: str) -> None:
+    # FRAGILE SITE ASSUMPTION: OPPO's India page currently renders phone series
+    # as li.sidebar-item cards and phone models as .product-item cards.
+    try:
+        change = page.get_by_text("Change", exact=True).first
+        if await change.count() and await change.is_visible(timeout=800):
+            await change.click(timeout=2500)
+            await page.wait_for_timeout(1000)
+    except Exception:
+        pass
+    if not await visible_texts(page, "li.sidebar-item"):
+        await goto_catalog_page(page, url)
+    try:
+        await click_visible_text(page, "li.sidebar-item", series_label)
+    except Exception:
+        await goto_catalog_page(page, url)
+        await click_visible_text(page, "li.sidebar-item", series_label)
+    await page.wait_for_timeout(1200)
+    if not await visible_texts(page, ".product-item"):
+        await goto_catalog_page(page, url)
+        try:
+            await click_visible_text(page, "li.sidebar-item", series_label)
+        except Exception:
+            LOGGER.warning("OPPO product cards are not visible after selecting series: %s", series_label)
+        await page.wait_for_timeout(1200)
+
+
+async def open_realme_series(page: Any, url: str, series_label: str) -> None:
+    # FRAGILE SITE ASSUMPTION: realme's India page currently renders mobile
+    # series in .main-left .item-content-i and product cards in .main-right .item.
+    try:
+        change = page.get_by_text("Change device", exact=False).first
+        if await change.count() and await change.is_visible(timeout=800):
+            await change.click(timeout=2500)
+            await page.wait_for_timeout(1000)
+    except Exception:
+        pass
+    if not await visible_texts(page, ".main-left .item-content-i"):
+        await goto_catalog_page(page, url)
+    try:
+        await click_visible_text(page, ".main-left .item-content-i", series_label)
+    except Exception:
+        await goto_catalog_page(page, url)
+        await click_visible_text(page, ".main-left .item-content-i", series_label)
+    await page.wait_for_timeout(1200)
+
+
+async def visible_texts(page: Any, selector: str) -> list[str]:
+    return await page.locator(selector).evaluate_all(
+        """
+        elements => elements
+          .filter(element => {
+            const box = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          })
+          .map(element => element.innerText.trim())
+          .filter(Boolean)
+        """
+    )
+
+
+async def click_visible_text(page: Any, selector: str, text: str) -> None:
+    clicked = await page.locator(selector).evaluate_all(
+        """
+        (elements, wanted) => {
+          const normalizedWanted = wanted.replace(/\\s+/g, ' ').trim();
+          const match = elements.find(element => {
+            const box = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            const normalizedText = element.innerText.replace(/\\s+/g, ' ').trim();
+            return box.width > 0
+              && box.height > 0
+              && style.visibility !== 'hidden'
+              && style.display !== 'none'
+              && normalizedText === normalizedWanted;
+          });
+          if (!match) return false;
+          match.scrollIntoView({ block: 'center', inline: 'center' });
+          match.click();
+          return true;
+        }
+        """,
+        text,
+    )
+    if not clicked:
+        raise ValueError(f"Visible element not found for selector {selector!r} and text {text!r}")
+
+
+def save_catalog_rows(
+    conn: sqlite3.Connection,
+    brand: str,
+    model: str,
+    url: str,
+    raw_rows: list[str],
+) -> int:
+    saved = 0
+    for raw_row in raw_rows:
+        parsed = parse_catalog_price_row(raw_row)
+        if not parsed:
+            continue
+        part, price_text, price_value, currency = parsed
+        if is_non_spare_part(part):
+            continue
+        entry = TrackerEntry(brand, model, part, url, currency or "INR", [], "body")
+        save_result(
+            conn,
+            entry,
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            price_text,
+            price_value,
+            currency or "INR",
+            "ok",
+        )
+        saved += 1
+    return saved
+
+
+def save_catalog_error(conn: sqlite3.Connection, brand: str, model: str, url: str, message: str) -> None:
+    entry = TrackerEntry(brand, model, "catalog discovery", url, "INR", [], "body")
+    save_result(
+        conn,
+        entry,
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        None,
+        None,
+        "INR",
+        "error",
+        message,
+    )
+
+
+def parse_catalog_price_row(text: str) -> tuple[str, str, float, str | None] | None:
+    clean = normalize_space(text)
+    match = find_currency_price_match(clean)
+    if not match:
+        return None
+    currency, value = parse_price(clean)
+    if value is None:
+        return None
+    part = normalize_space(clean[: match.start()].strip(" :-|"))
+    if not part:
+        return None
+    return part, clean, value, currency
+
+
+def is_non_spare_part(part: str) -> bool:
+    part_lower = part.lower()
+    return any(
+        marker in part_lower
+        for marker in [
+            "repair, inspection",
+            "service fee",
+            "service type",
+            "software installation",
+            "software upgrade",
+            "return without repair",
+        ]
+    )
+
+
 def parse_apple_service_prices(text: str) -> list[tuple[str, str, float]]:
     lines = [line for line in (normalize_space(line) for line in text.splitlines()) if line]
     results = []
@@ -509,16 +823,33 @@ async def perform_action(page: Any, action: dict[str, Any]) -> None:
 
 
 def parse_price(text: str) -> tuple[str | None, float | None]:
-    match = PRICE_RE.search(text)
+    match = find_currency_price_match(text) or PRICE_RE.search(text)
     if not match:
         return None, None
-    currency = match.group("currency")
+    currency = normalize_currency(match.group("currency"))
     amount = float(match.group("amount").replace(",", ""))
-    if currency and currency.lower().startswith("rs"):
-        currency = "INR"
-    elif currency == "₹":
-        currency = "INR"
     return currency, amount
+
+
+def find_currency_price_match(text: str) -> re.Match[str] | None:
+    matches = list(CURRENCY_PREFIX_PRICE_RE.finditer(text)) + list(CURRENCY_SUFFIX_PRICE_RE.finditer(text))
+    if not matches:
+        return None
+    return sorted(matches, key=lambda match: match.start())[0]
+
+
+def normalize_currency(currency: str | None) -> str | None:
+    if not currency:
+        return None
+    if currency.lower().startswith("rs") or currency.upper() == "INR" or currency == "₹":
+        return "INR"
+    if currency == "$":
+        return "USD"
+    if currency == "€":
+        return "EUR"
+    if currency == "£":
+        return "GBP"
+    return currency.upper()
 
 
 def extract_relevant_price_text(text: str, part: str) -> str:
@@ -593,7 +924,7 @@ def plot_history(db_path: Path, output_path: Path, brand: str | None, model: str
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Track Samsung and Apple spare-part prices over time.")
+    parser = argparse.ArgumentParser(description="Track mobile spare-part prices over time.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Scrape all enabled entries and save results.")
@@ -617,13 +948,23 @@ def build_parser() -> argparse.ArgumentParser:
     plot_parser.add_argument("--part")
 
     discover_parser = subparsers.add_parser("discover-all", help="Discover all model/spare-part prices from supported pages.")
-    discover_parser.add_argument("--brand", choices=["all", "apple", "samsung"], default="all")
+    discover_parser.add_argument("--brand", choices=["all", "apple", "samsung", "oppo", "realme"], default="all")
     discover_parser.add_argument("--delay", type=float, default=3.0)
     discover_parser.add_argument("--max-models", type=int)
     discover_parser.add_argument(
         "--samsung-series",
         choices=["galaxy-z", "galaxy-s", "galaxy-a", "galaxy-m", "galaxy-f", "galaxy-tab"],
         help="Only crawl one Samsung series. Useful for retrying a failed series.",
+    )
+    discover_parser.add_argument(
+        "--oppo-series",
+        choices=OPPO_MOBILE_SERIES,
+        help="Only crawl one OPPO series. Useful for retrying a failed series.",
+    )
+    discover_parser.add_argument(
+        "--realme-series",
+        choices=REALME_MOBILE_SERIES,
+        help="Only crawl one realme series. Useful for retrying a failed series.",
     )
 
     return parser
@@ -652,7 +993,9 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info("Wrote %s", args.output)
         return 0
     if args.command == "discover-all":
-        return asyncio.run(discover_all(args.brand, args.delay, args.max_models, args.samsung_series))
+        return asyncio.run(
+            discover_all(args.brand, args.delay, args.max_models, args.samsung_series, args.oppo_series, args.realme_series)
+        )
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

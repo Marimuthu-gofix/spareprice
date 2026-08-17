@@ -19,8 +19,8 @@
           </button>
         </form>
         <form action="{{ url_for('discover_all_now') }}" method="post">
-          <button data-job-button data-running-label="Discovering..." data-start-label="Discovering all available model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
-            {% if job.running %}Working...{% else %}Discover All Models{% endif %}
+          <button data-job-button data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
+            {% if job.running %}Working...{% else %}Discover All Mobiles{% endif %}
           </button>
         </form>
         <form class="filters" method="get">
@@ -40,7 +40,7 @@
       <section id="jobStatus" class="job-status {% if job.running %}running{% endif %}" data-running="{{ 'true' if job.running else 'false' }}">
         <strong>{{ job.message }}</strong>
         <span>
-          {% if job.started_at %}Started {{ job.started_at|localdate }}{% else %}Click the button to scrape every configured device and spare part.{% endif %}
+          {% if job.started_at %}Started {{ job.started_at|localdate }}{% else %}Click a button to scrape configured devices or discover all supported mobiles.{% endif %}
         </span>
       </section>
 
