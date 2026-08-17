@@ -82,7 +82,7 @@ button {
 button:disabled {
   border-color: #9aa7b9;
   background: #9aa7b9;
-  cursor: wait;
+  cursor: not-allowed;
 }
 
 .primary-action {
@@ -93,6 +93,27 @@ button:disabled {
   min-width: 170px;
   border-color: #172033;
   background: #172033;
+}
+
+.readonly-actions {
+  display: grid;
+  gap: 3px;
+  max-width: 300px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.readonly-actions strong {
+  color: #1947a3;
+  font-size: 13px;
+}
+
+.readonly-actions span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 input,
