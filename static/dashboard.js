@@ -1,5 +1,6 @@
 (function () {
-  const series = window.SPAREPRICE_SERIES || [];
+  const seriesNode = document.getElementById("spareprice-series");
+  const series = seriesNode ? JSON.parse(seriesNode.textContent || "[]") : [];
   const svg = document.getElementById("trendChart");
   const chartLegend = document.getElementById("chartLegend");
   const jobButtons = [...document.querySelectorAll("[data-job-button]")];

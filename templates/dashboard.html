@@ -193,9 +193,7 @@
       </section>
     </main>
 
-    <script>
-      window.SPAREPRICE_SERIES = {{ chart_json|safe }};
-    </script>
+    <script id="spareprice-series" type="application/json">{{ chart_json|safe }}</script>
     <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
   </body>
 </html>
