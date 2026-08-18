@@ -122,6 +122,26 @@ entrypoint = "dashboard:app"
 
 The hosted Vercel dashboard is read-only. It displays the committed `price_history.sqlite3` data, but the scrape buttons are disabled because Vercel serverless functions are not a good place to run long Playwright browser crawls or write a persistent SQLite database. To refresh hosted data, run discovery locally, commit `price_history.sqlite3` and `price_history.csv`, then push to GitHub.
 
+## Render Deployment
+
+Use Render when you want the live **Check All Prices** and **Discover All Mobiles** buttons to run. Render can host this as a long-running web service with Playwright/Chromium installed.
+
+From the Render dashboard:
+
+1. Click **New Web Service**.
+2. Connect your GitHub repo.
+3. Select the `spareprice` repository.
+4. Use Docker if Render asks for the runtime. This repo includes `Dockerfile` and `render.yaml`.
+5. Deploy.
+
+For persistent live price history, add a Render disk and set this environment variable:
+
+```text
+DB_PATH=/var/data/price_history.sqlite3
+```
+
+Without a disk, live scraping can work, but the SQLite file may reset after redeploys or service restarts.
+
 ## Daily Schedule
 
 ### Windows Task Scheduler

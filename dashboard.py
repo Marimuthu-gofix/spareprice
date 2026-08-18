@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -34,14 +35,48 @@ job_state: dict[str, Any] = {
 
 
 def db_path() -> Path:
-    configured = app.config.get("DB_PATH")
-    return Path(configured) if configured else DEFAULT_DB
+    configured = app.config.get("DB_PATH") or os.environ.get("DB_PATH")
+    if not configured:
+        return DEFAULT_DB
+    path = Path(configured)
+    if not path.exists() and DEFAULT_DB.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(DEFAULT_DB, path)
+    return path
 
 
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
     return conn
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            brand TEXT NOT NULL,
+            model TEXT NOT NULL,
+            part TEXT NOT NULL,
+            price TEXT,
+            price_value REAL,
+            currency TEXT,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_price_history_lookup
+        ON price_history (brand, model, part, date)
+        """
+    )
+    conn.commit()
 
 
 def money(value: float | None, currency: str | None) -> str:

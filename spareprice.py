@@ -5,6 +5,7 @@ import asyncio
 import csv
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -89,6 +90,14 @@ def required(mapping: dict[str, Any], key: str) -> str:
     return str(value)
 
 
+def default_db_path(fallback: str | Path) -> Path:
+    return Path(os.environ.get("DB_PATH") or fallback)
+
+
+def browser_launch_args() -> list[str]:
+    return ["--no-sandbox", "--disable-dev-shm-usage"]
+
+
 def connect_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -155,7 +164,7 @@ async def run_tracker(config_path: Path) -> int:
     from playwright.async_api import async_playwright
 
     config = load_config(config_path)
-    db_path = Path(config.get("database_path", "price_history.sqlite3"))
+    db_path = default_db_path(config.get("database_path", "price_history.sqlite3"))
     delay_seconds = float(config.get("delay_seconds", 6))
     timeout_ms = int(config.get("timeout_ms", 45000))
     headless = bool(config.get("headless", True))
@@ -163,7 +172,7 @@ async def run_tracker(config_path: Path) -> int:
 
     conn = connect_db(db_path)
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=headless)
+        browser = await playwright.chromium.launch(headless=headless, args=browser_launch_args())
         context = await browser.new_context(
             locale="en-IN",
             viewport={"width": 1366, "height": 900},
@@ -225,7 +234,7 @@ async def dry_run(config_path: Path) -> int:
     timeout_ms = int(config.get("timeout_ms", 45000))
     entries = enabled_entries(config)
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=False)
+        browser = await playwright.chromium.launch(headless=False, args=browser_launch_args())
         context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
         for entry in entries:
             page = await context.new_page()
@@ -252,9 +261,9 @@ async def discover_all(
 ) -> int:
     from playwright.async_api import async_playwright
 
-    conn = connect_db(Path("price_history.sqlite3"))
+    conn = connect_db(default_db_path("price_history.sqlite3"))
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=True, args=browser_launch_args())
         context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
         if brand in {"all", "apple"}:
             await discover_apple(context, conn, delay_seconds, max_models)
