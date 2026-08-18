@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "price_history.sqlite3"
 DEFAULT_CONFIG = ROOT / "config.json"
 HOSTED_READ_ONLY = bool(os.environ.get("VERCEL"))
+DISPLAY_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 app = Flask(__name__)
 job_lock = threading.Lock()
@@ -105,7 +107,10 @@ def localdate_filter(value: str | None) -> str:
         return "-"
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.strftime("%d %b %Y, %H:%M")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        local_time = parsed.astimezone(DISPLAY_TIMEZONE)
+        return local_time.strftime("%d %b %Y, %I:%M %p")
     except ValueError:
         return value
 
