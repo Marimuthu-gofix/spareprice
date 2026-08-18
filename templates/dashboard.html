@@ -50,6 +50,8 @@
         <span>
           {% if hosted_read_only %}
             Run scraper locally and push the updated database to refresh Vercel.
+          {% elif job.running %}
+            Time: calculating... | Done: {{ job.progress.done or 0 }} models | Rows saved: {{ job.progress.rows or 0 }} | Errors: {{ job.progress.errors or 0 }}{% if job.progress.current %} | Current: {{ job.progress.current }}{% endif %}
           {% elif job.started_at %}
             Started {{ job.started_at|localdate }}
           {% else %}

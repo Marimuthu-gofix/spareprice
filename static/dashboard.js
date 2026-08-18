@@ -155,7 +155,9 @@
     const state = await response.json();
     setJobStatus(
       state.message,
-      state.finished_at ? `Finished ${formatStatusDate(state.finished_at)}` : formatProgress(state.progress),
+      state.finished_at
+        ? `Finished ${formatStatusDate(state.finished_at)} | Took ${formatDurationBetween(state.started_at, state.finished_at)}`
+        : formatProgress(state.progress, state.started_at),
       state.running
     );
     if (state.running) {
@@ -196,13 +198,38 @@
     });
   }
 
-  function formatProgress(progress) {
+  function formatProgress(progress, startedAt) {
     if (!progress) return "Still running...";
-    const parts = [`Done: ${Number(progress.done || 0)} models`];
+    const parts = [`Time: ${formatElapsed(startedAt)}`];
+    parts.push(`Done: ${Number(progress.done || 0)} models`);
     parts.push(`Rows saved: ${Number(progress.rows || 0)}`);
     parts.push(`Errors: ${Number(progress.errors || 0)}`);
     if (progress.current) parts.push(`Current: ${progress.current}`);
     return parts.join(" | ");
+  }
+
+  function formatElapsed(startedAt) {
+    if (!startedAt) return "0s";
+    const start = new Date(startedAt);
+    if (Number.isNaN(start.getTime())) return "0s";
+    return formatDurationMs(Date.now() - start.getTime());
+  }
+
+  function formatDurationBetween(startedAt, finishedAt) {
+    const start = new Date(startedAt || "");
+    const finish = new Date(finishedAt || "");
+    if (Number.isNaN(start.getTime()) || Number.isNaN(finish.getTime())) return "-";
+    return formatDurationMs(finish.getTime() - start.getTime());
+  }
+
+  function formatDurationMs(milliseconds) {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+    if (minutes) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
   }
 
   function escapeHtml(value) {
