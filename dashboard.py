@@ -275,7 +275,7 @@ def discover_scope_now() -> Any:
         return hosted_read_only_response()
     brand = request.form.get("scrape_brand", "").strip().lower() or "all"
     model = request.form.get("scrape_model", "").strip()
-    if brand not in {"all", "apple", "samsung", "oppo", "realme"}:
+    if brand not in {"all", "apple", "samsung", "oppo", "realme", "oneplus", "mi", "vivo"}:
         brand = "all"
     started = start_job("catalog", brand=brand, model=model)
     if request.headers.get("Accept") == "application/json":
@@ -300,7 +300,7 @@ def hosted_read_only_response() -> Any:
 def update_job_progress(line: str, output: str) -> None:
     progress_patch: dict[str, Any] = {}
     discovered = re.search(
-        r"Discovered\s+(?P<brand>Apple|Samsung|OPPO|realme)\s+(?P<model>.+?)\s+\((?:(?P<rows>\d+)\s+rows,\s+)?(?P<count>\d+)/(?P<total>[^)]+)\)",
+        r"Discovered\s+(?P<brand>Apple|Samsung|OPPO|realme|OnePlus|Mi|vivo)\s+(?P<model>.+?)\s+\((?:(?P<rows>\d+)\s+rows,\s+)?(?P<count>\d+)/(?P<total>[^)]+)\)",
         line,
     )
     if discovered:

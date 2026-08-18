@@ -46,6 +46,13 @@ REALME_MOBILE_SERIES = [
     "X Series",
     "U Series",
 ]
+DISCOVERY_BRANDS = ["apple", "samsung", "oppo", "realme", "oneplus", "mi", "vivo"]
+ONEPLUS_SUPPORT_URL = "https://service.oneplus.com/in/spare-parts-price#/"
+ONEPLUS_API_BASE = "https://ind-sow-cms.oneplus.com/oppo-api"
+MI_SUPPORT_URL = "https://www.mi.com/in/support/spare-part-prices/model?category=Mobile"
+MI_API_BASE = "https://in-go.buy.mi.com/in/serviceplus/api/fos/public/v1/mi-store"
+MI_API_AUTH = "Basic bWlzdG9yZS1zZXJ2aWNlcGx1cy1pbnRlZ3JhdGlvbjp4aWFvbWlAQURNSU4="
+VIVO_SUPPORT_URL = "https://www.vivo.com/in/support/accessory"
 
 
 @dataclass(frozen=True)
@@ -274,13 +281,19 @@ async def discover_all(
         context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
         if brand in {"all", "apple"}:
             await discover_apple(context, conn, delay_seconds, max_models, model_filter)
-        await context.close()
         if brand in {"all", "samsung"}:
             await discover_samsung(browser, conn, delay_seconds, max_models, samsung_series, model_filter)
         if brand in {"all", "oppo"}:
             await discover_oppo(browser, conn, delay_seconds, max_models, oppo_series, model_filter)
         if brand in {"all", "realme"}:
             await discover_realme(browser, conn, delay_seconds, max_models, realme_series, model_filter)
+        if brand in {"all", "oneplus"}:
+            await discover_oneplus(context, conn, delay_seconds, max_models, model_filter)
+        if brand in {"all", "mi"}:
+            await discover_mi(context, conn, delay_seconds, max_models, model_filter)
+        if brand in {"all", "vivo"}:
+            await discover_vivo(context, conn, delay_seconds, max_models, model_filter)
+        await context.close()
         await browser.close()
     conn.close()
     return 0
@@ -583,6 +596,157 @@ async def discover_realme(
         await context.close()
 
 
+async def discover_oneplus(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    # FRAGILE SITE ASSUMPTION: OnePlus India currently powers the public page
+    # with these OPPO/OnePlus CMS endpoints and marketingModelCode identifiers.
+    request = context.request
+    count = 0
+    try:
+        product_payload = await api_post_json(
+            request,
+            f"{ONEPLUS_API_BASE}/basic/v1/getProduct",
+            {"regionIsoCode2": "IN"},
+            headers=oneplus_headers(),
+        )
+        products = [
+            item
+            for item in product_payload.get("data", [])
+            if str(item.get("categoryCode")) == "01"
+            and model_matches_filter(str(item.get("marketingModelName") or ""), model_filter)
+        ]
+        LOGGER.info("OnePlus mobile models found: %s", len(products))
+        for item in products:
+            if max_models is not None and count >= max_models:
+                return
+            model_name = str(item.get("marketingModelName") or "").strip()
+            model_code = str(item.get("marketingModelCode") or "").strip()
+            if not model_name or not model_code:
+                continue
+            try:
+                price_payload = await api_post_json(
+                    request,
+                    f"{ONEPLUS_API_BASE}/basic/v1/getPartPriceNew",
+                    {"marketingModelCode": model_code, "regionIsoCode2": "IN"},
+                    headers=oneplus_headers(),
+                )
+                rows = oneplus_price_rows(price_payload)
+                saved = save_structured_price_rows(conn, "OnePlus", model_name, ONEPLUS_SUPPORT_URL, rows)
+                if not saved:
+                    raise ValueError("No OnePlus spare-part price rows returned")
+                count += 1
+                LOGGER.info("Discovered OnePlus %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+                await asyncio.sleep(delay_seconds)
+            except Exception as exc:
+                LOGGER.exception("OnePlus model discovery failed: %s", model_name)
+                save_catalog_error(conn, "OnePlus", model_name, ONEPLUS_SUPPORT_URL, f"{type(exc).__name__}: {exc}")
+    except Exception:
+        LOGGER.exception("OnePlus catalog discovery failed")
+
+
+async def discover_mi(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    # FRAGILE SITE ASSUMPTION: Xiaomi India currently serves model and part data
+    # from in-go.buy.mi.com with the public Basic auth value embedded in the page bundle.
+    request = context.request
+    count = 0
+    try:
+        models = await api_get_json(
+            request,
+            f"{MI_API_BASE}/spare-part/category/models/Mobile",
+            headers=mi_headers(),
+        )
+        model_names = [
+            str(model).strip()
+            for model in models
+            if str(model).strip() and model_matches_filter(str(model), model_filter)
+        ]
+        LOGGER.info("Mi mobile models found: %s", len(model_names))
+        for model_name in model_names:
+            if max_models is not None and count >= max_models:
+                return
+            try:
+                rows = await fetch_mi_model_rows(request, model_name)
+                saved = save_structured_price_rows(conn, "Mi", model_name, MI_SUPPORT_URL, rows)
+                if not saved:
+                    raise ValueError("No Mi spare-part price rows returned")
+                count += 1
+                LOGGER.info("Discovered Mi %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+                await asyncio.sleep(delay_seconds)
+            except Exception as exc:
+                LOGGER.exception("Mi model discovery failed: %s", model_name)
+                save_catalog_error(conn, "Mi", model_name, MI_SUPPORT_URL, f"{type(exc).__name__}: {exc}")
+    except Exception:
+        LOGGER.exception("Mi catalog discovery failed")
+
+
+async def discover_vivo(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    # FRAGILE SITE ASSUMPTION: vivo India renders model ids into .select-model-item
+    # and posts the selected id to /in/support/queryPriceByProductId.
+    page = await context.new_page()
+    page.set_default_timeout(30000)
+    count = 0
+    try:
+        await goto_catalog_page(page, VIVO_SUPPORT_URL)
+        models = await page.locator(".select-model-item").evaluate_all(
+            """
+            items => items.map(item => ({
+              id: item.getAttribute('data-id'),
+              name: item.innerText.trim()
+            })).filter(item => item.id && item.name)
+            """
+        )
+        models = [
+            item
+            for item in models
+            if model_matches_filter(str(item.get("name") or ""), model_filter)
+        ]
+        LOGGER.info("vivo mobile models found: %s", len(models))
+        for item in models:
+            if max_models is not None and count >= max_models:
+                return
+            model_name = str(item.get("name") or "").strip()
+            model_id = str(item.get("id") or "").strip()
+            try:
+                payload = await api_post_json(
+                    context.request,
+                    "https://www.vivo.com/in/support/queryPriceByProductId",
+                    None,
+                    headers={"Referer": VIVO_SUPPORT_URL, "Origin": "https://www.vivo.com"},
+                    form={"id": model_id},
+                )
+                rows = vivo_price_rows(payload)
+                saved = save_structured_price_rows(conn, "vivo", model_name, VIVO_SUPPORT_URL, rows)
+                if not saved:
+                    raise ValueError("No vivo spare-part price rows returned")
+                count += 1
+                LOGGER.info("Discovered vivo %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+                await asyncio.sleep(delay_seconds)
+            except Exception as exc:
+                LOGGER.exception("vivo model discovery failed: %s", model_name)
+                save_catalog_error(conn, "vivo", model_name, VIVO_SUPPORT_URL, f"{type(exc).__name__}: {exc}")
+    except Exception:
+        LOGGER.exception("vivo catalog discovery failed")
+    finally:
+        await page.close()
+
+
 async def goto_catalog_page(page: Any, url: str) -> None:
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -717,6 +881,35 @@ def save_catalog_rows(
     return saved
 
 
+def save_structured_price_rows(
+    conn: sqlite3.Connection,
+    brand: str,
+    model: str,
+    url: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    saved = 0
+    for row in rows:
+        part = normalize_space(str(row.get("part") or ""))
+        price_value = coerce_price_value(row.get("price_value") or row.get("price"))
+        if not part or price_value is None or is_non_spare_part(part):
+            continue
+        currency = normalize_currency(str(row.get("currency") or "INR"))
+        price_text = str(row.get("price_text") or format_price_text(currency, price_value))
+        entry = TrackerEntry(brand, model, part, url, currency or "INR", [], "body")
+        save_result(
+            conn,
+            entry,
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            normalize_space(f"{part} {price_text}"),
+            price_value,
+            currency or "INR",
+            "ok",
+        )
+        saved += 1
+    return saved
+
+
 def save_catalog_error(conn: sqlite3.Connection, brand: str, model: str, url: str, message: str) -> None:
     entry = TrackerEntry(brand, model, "catalog discovery", url, "INR", [], "body")
     save_result(
@@ -729,6 +922,130 @@ def save_catalog_error(conn: sqlite3.Connection, brand: str, model: str, url: st
         "error",
         message,
     )
+
+
+async def api_get_json(request: Any, url: str, headers: dict[str, str] | None = None, **kwargs: Any) -> Any:
+    response = await request.get(url, headers=headers or {}, **kwargs)
+    if not response.ok:
+        raise ValueError(f"GET {url} failed with HTTP {response.status}: {(await response.text())[:300]}")
+    return await response.json()
+
+
+async def api_post_json(
+    request: Any,
+    url: str,
+    payload: dict[str, Any] | None,
+    headers: dict[str, str] | None = None,
+    form: dict[str, str] | None = None,
+) -> Any:
+    response = await request.post(url, data=payload, form=form, headers=headers or {})
+    if not response.ok:
+        raise ValueError(f"POST {url} failed with HTTP {response.status}: {(await response.text())[:300]}")
+    return await response.json()
+
+
+def oneplus_headers() -> dict[str, str]:
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://service.oneplus.com",
+        "Referer": "https://service.oneplus.com/in/spare-parts-price",
+    }
+
+
+def mi_headers() -> dict[str, str]:
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Authorization": MI_API_AUTH,
+        "Origin": "https://www.mi.com",
+        "Referer": MI_SUPPORT_URL,
+    }
+
+
+def oneplus_price_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for group in payload.get("data", {}).get("partPriceList", []) or []:
+        children = group.get("childList") or [group]
+        for item in children:
+            price_value = coerce_price_value(item.get("discountRetailPrice") or item.get("retailPrice"))
+            if price_value is None:
+                continue
+            part = item.get("partName") or item.get("lv3ClassificationName") or group.get("groupName")
+            rows.append(
+                {
+                    "part": part,
+                    "price_value": price_value,
+                    "currency": item.get("retailPriceCurrency") or "INR",
+                }
+            )
+    return rows
+
+
+async def fetch_mi_model_rows(request: Any, model_name: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    limit = 200
+    offset = 0
+    while True:
+        payload = await api_get_json(
+            request,
+            f"{MI_API_BASE}/spare-part",
+            headers=mi_headers(),
+            params={
+                "sort": "id",
+                "order": "DESC",
+                "query": f"modelname:eq:{model_name}",
+                "limit": str(limit),
+                "offset": str(offset),
+            },
+        )
+        batch = payload.get("results") or []
+        for item in batch:
+            detail = normalize_space(str(item.get("sparePartDetails") or ""))
+            category = normalize_space(str(item.get("category") or ""))
+            part = detail if not category or category.lower() in detail.lower() else f"{category} - {detail}"
+            rows.append(
+                {
+                    "part": part,
+                    "price_value": item.get("partPrice"),
+                    "currency": "INR",
+                }
+            )
+        count = int(payload.get("count") or len(batch))
+        offset += len(batch)
+        if not batch or offset >= count:
+            break
+    return rows
+
+
+def vivo_price_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    spare_part_vo = payload.get("data", {}).get("sparePartVO", {})
+    currency = spare_part_vo.get("spareCompany") or "INR"
+    for item in spare_part_vo.get("sparePartsVoList") or []:
+        price_text = item.get("materialPrice") or item.get("promotionPrice") or item.get("price")
+        rows.append(
+            {
+                "part": item.get("name"),
+                "price_text": price_text,
+                "price_value": coerce_price_value(price_text),
+                "currency": currency,
+            }
+        )
+    return rows
+
+
+def coerce_price_value(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    _, parsed = parse_price(str(value))
+    return parsed
+
+
+def format_price_text(currency: str | None, price_value: float) -> str:
+    label = "INR" if not currency or currency == "INR" else currency
+    return f"{label} {price_value:,.0f}" if float(price_value).is_integer() else f"{label} {price_value:,.2f}"
 
 
 def parse_catalog_price_row(text: str) -> tuple[str, str, float, str | None] | None:
@@ -980,7 +1297,7 @@ def build_parser() -> argparse.ArgumentParser:
     plot_parser.add_argument("--part")
 
     discover_parser = subparsers.add_parser("discover-all", help="Discover all model/spare-part prices from supported pages.")
-    discover_parser.add_argument("--brand", choices=["all", "apple", "samsung", "oppo", "realme"], default="all")
+    discover_parser.add_argument("--brand", choices=["all", *DISCOVERY_BRANDS], default="all")
     discover_parser.add_argument("--delay", type=float, default=3.0)
     discover_parser.add_argument("--max-models", type=int)
     discover_parser.add_argument("--model", help="Only crawl models containing this text.")

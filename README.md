@@ -1,8 +1,8 @@
 # Spareprice
 
-Small, configurable price tracker for a fixed shortlist of Samsung and Apple spare-part repair prices.
+Small, configurable price tracker for mobile spare-part repair prices across Apple, Samsung, OPPO, realme, OnePlus, Mi/Xiaomi, and vivo.
 
-It uses Playwright because the referenced Apple and Samsung pages populate prices after JavaScript-driven selection flows. Keep the run frequency low and use this for personal tracking only; both sites may restrict automated access in their terms.
+It uses Playwright because the referenced pages populate prices after JavaScript-driven selection flows or through browser-loaded APIs. Keep the run frequency low and use this for personal tracking only; these sites may restrict automated access in their terms.
 
 ## Install
 
@@ -93,7 +93,7 @@ The dashboard reads `price_history.sqlite3` and shows latest prices, recent chec
 
 Use **Check All Prices** in the dashboard to run the scraper for every enabled item in `config.json`. The button runs in the background and refreshes the page after it finishes.
 
-Use **Discover All Mobiles** to crawl all model and spare-part/service prices exposed by the supported Apple, Samsung, OPPO, and realme pages. This can take several minutes because it waits between models.
+Use **Discover All Mobiles** to crawl all model and spare-part/service prices exposed by the supported Apple, Samsung, OPPO, realme, OnePlus, Mi/Xiaomi, and vivo pages. This can take several minutes because it waits between models.
 
 You can also run catalog discovery from PowerShell:
 
@@ -107,6 +107,9 @@ For a quick test:
 python spareprice.py discover-all --brand samsung --max-models 1 --delay 1
 python spareprice.py discover-all --brand oppo --max-models 1 --delay 1
 python spareprice.py discover-all --brand realme --max-models 1 --delay 1
+python spareprice.py discover-all --brand oneplus --max-models 1 --delay 1
+python spareprice.py discover-all --brand mi --max-models 1 --delay 1
+python spareprice.py discover-all --brand vivo --max-models 1 --delay 1
 ```
 
 Keep the delay conservative. Full-catalog scraping is more likely to trigger blocking or ToS issues than your original small shortlist.
