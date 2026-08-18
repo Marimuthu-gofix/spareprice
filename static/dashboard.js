@@ -137,10 +137,11 @@
   jobButtons.forEach((button) => {
     button.closest("form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const form = button.closest("form");
       setButtonsDisabled(true);
       button.textContent = button.dataset.runningLabel || "Working...";
       setJobStatus(button.dataset.startLabel || "Working...", "This can take a few minutes.", true);
-      await fetch(button.closest("form").action, { method: "POST", headers: { Accept: "application/json" } });
+      await fetch(form.action, { method: "POST", headers: { Accept: "application/json" }, body: new FormData(form) });
       pollJob();
     });
   });
@@ -152,7 +153,11 @@
   async function pollJob() {
     const response = await fetch("/job-status");
     const state = await response.json();
-    setJobStatus(state.message, state.finished_at ? `Finished ${formatStatusDate(state.finished_at)}` : "Still running...", state.running);
+    setJobStatus(
+      state.message,
+      state.finished_at ? `Finished ${formatStatusDate(state.finished_at)}` : formatProgress(state.progress),
+      state.running
+    );
     if (state.running) {
       window.setTimeout(pollJob, 3000);
       return;
@@ -165,7 +170,7 @@
     jobButtons.forEach((button) => {
       button.disabled = disabled;
       if (!disabled) {
-        button.textContent = button.id === "checkAllButton" ? "Check All Prices" : "Discover All Mobiles";
+        button.textContent = button.dataset.idleLabel || (button.id === "checkAllButton" ? "Check All Prices" : "Discover All Mobiles");
       }
     });
   }
@@ -181,6 +186,15 @@
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
     return date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function formatProgress(progress) {
+    if (!progress) return "Still running...";
+    const parts = [`Done: ${Number(progress.done || 0)} models`];
+    parts.push(`Rows saved: ${Number(progress.rows || 0)}`);
+    parts.push(`Errors: ${Number(progress.errors || 0)}`);
+    if (progress.current) parts.push(`Current: ${progress.current}`);
+    return parts.join(" | ");
   }
 
   function escapeHtml(value) {

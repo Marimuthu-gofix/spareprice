@@ -20,12 +20,12 @@
           </div>
         {% else %}
           <form action="{{ url_for('check_now') }}" method="post">
-            <button data-job-button data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
+            <button data-job-button data-idle-label="Check All Prices" data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
               {% if job.running %}Checking...{% else %}Check All Prices{% endif %}
             </button>
           </form>
           <form action="{{ url_for('discover_all_now') }}" method="post">
-            <button data-job-button data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
+            <button data-job-button data-idle-label="Discover All Mobiles" data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
               {% if job.running %}Working...{% else %}Discover All Mobiles{% endif %}
             </button>
           </form>
@@ -57,6 +57,26 @@
           {% endif %}
         </span>
       </section>
+
+      {% if not hosted_read_only %}
+        <section class="scope-panel">
+          <div>
+            <h2>Scrape by Brand or Model</h2>
+            <p>Run a smaller live check for one brand or a model name match.</p>
+          </div>
+          <form action="{{ url_for('discover_scope_now') }}" method="post" class="scope-form">
+            <select name="scrape_brand" aria-label="Scrape brand">
+              <option value="all">All brands</option>
+              <option value="apple">Apple</option>
+              <option value="samsung">Samsung</option>
+              <option value="oppo">OPPO</option>
+              <option value="realme">realme</option>
+            </select>
+            <input name="scrape_model" placeholder="Model contains, e.g. iPhone 14">
+            <button data-job-button data-idle-label="Scrape Selected" data-running-label="Scraping..." data-start-label="Scraping selected brand/model prices..." type="submit">Scrape Selected</button>
+          </form>
+        </section>
+      {% endif %}
 
       <section class="stats" aria-label="Dashboard summary">
         <article>

@@ -158,6 +158,30 @@ main {
   border-left-color: var(--green);
 }
 
+.scope-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.scope-panel p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scope-form {
+  display: grid;
+  grid-template-columns: 150px minmax(220px, 320px) 150px;
+  gap: 10px;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -360,9 +384,14 @@ a {
 
   .toolbar,
   .job-status,
+  .scope-panel,
   .table-footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .scope-form {
+    grid-template-columns: 1fr;
   }
 
   .pagination {

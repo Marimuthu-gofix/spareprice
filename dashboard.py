@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -31,6 +32,13 @@ job_state: dict[str, Any] = {
     "returncode": None,
     "message": "Ready",
     "output": "",
+    "progress": {
+        "done": 0,
+        "rows": 0,
+        "errors": 0,
+        "current": "",
+        "scope": "",
+    },
 }
 
 
@@ -250,7 +258,21 @@ def check_now() -> Any:
 def discover_all_now() -> Any:
     if HOSTED_READ_ONLY:
         return hosted_read_only_response()
-    started = start_job("catalog")
+    started = start_job("catalog", brand="all", model="")
+    if request.headers.get("Accept") == "application/json":
+        return jsonify(current_job_state()), (202 if started else 409)
+    return redirect(url_for("index"))
+
+
+@app.post("/discover-scope")
+def discover_scope_now() -> Any:
+    if HOSTED_READ_ONLY:
+        return hosted_read_only_response()
+    brand = request.form.get("scrape_brand", "").strip().lower() or "all"
+    model = request.form.get("scrape_model", "").strip()
+    if brand not in {"all", "apple", "samsung", "oppo", "realme"}:
+        brand = "all"
+    started = start_job("catalog", brand=brand, model=model)
     if request.headers.get("Accept") == "application/json":
         return jsonify(current_job_state()), (202 if started else 409)
     return redirect(url_for("index"))
@@ -270,18 +292,65 @@ def hosted_read_only_response() -> Any:
     return redirect(url_for("index"))
 
 
+def update_job_progress(line: str, output: str) -> None:
+    progress_patch: dict[str, Any] = {}
+    discovered = re.search(
+        r"Discovered\s+(?P<brand>Apple|Samsung|OPPO|realme)\s+(?P<model>.+?)\s+\((?:(?P<rows>\d+)\s+rows,\s+)?(?P<count>\d+)/(?P<total>[^)]+)\)",
+        line,
+    )
+    if discovered:
+        progress_patch["done"] = int(discovered.group("count"))
+        brand_name = discovered.group("brand")
+        model_name = discovered.group("model")
+        progress_patch["current"] = model_name if model_name.lower().startswith(brand_name.lower()) else f"{brand_name} {model_name}"
+        if discovered.group("rows"):
+            progress_patch["rows_delta"] = int(discovered.group("rows"))
+
+    checking = re.search(r"Checking\s+(?P<count>\d+)/(?P<total>\d+):\s+(?P<current>.+)$", line)
+    if checking:
+        progress_patch["done"] = int(checking.group("count")) - 1
+        progress_patch["current"] = checking.group("current")
+
+    saved = re.search(r"Saved\s+(?P<brand>\S+)\s+(?P<model>.+?):", line)
+    if saved:
+        progress_patch["done_increment"] = 1
+        progress_patch["rows_delta"] = 1
+        progress_patch["current"] = f"{saved.group('brand')} {saved.group('model')}"
+
+    if " ERROR " in f" {line} " or " discovery failed" in line.lower() or " failed:" in line.lower():
+        progress_patch["errors_delta"] = 1
+
+    with job_lock:
+        progress = dict(job_state.get("progress") or {})
+        if "done" in progress_patch:
+            progress["done"] = progress_patch["done"]
+        if "done_increment" in progress_patch:
+            progress["done"] = int(progress.get("done") or 0) + int(progress_patch["done_increment"])
+        if "rows_delta" in progress_patch:
+            progress["rows"] = int(progress.get("rows") or 0) + int(progress_patch["rows_delta"])
+        if "errors_delta" in progress_patch:
+            progress["errors"] = int(progress.get("errors") or 0) + int(progress_patch["errors_delta"])
+        if "current" in progress_patch:
+            progress["current"] = progress_patch["current"]
+        job_state["progress"] = progress
+        job_state["output"] = output
+
+
 def current_job_state() -> dict[str, Any]:
     with job_lock:
         return dict(job_state)
 
 
-def start_job(job_type: str) -> bool:
+def start_job(job_type: str, brand: str = "all", model: str = "") -> bool:
     with job_lock:
         if job_state["running"]:
             return False
         message = "Checking all configured devices..."
         if job_type == "catalog":
-            message = "Discovering all supported mobile model and spare-part prices..."
+            scope = "all brands" if brand == "all" else brand
+            if model:
+                scope += f" matching {model}"
+            message = f"Discovering {scope} model and spare-part prices..."
         job_state.update(
             {
                 "id": str(uuid.uuid4()),
@@ -291,37 +360,58 @@ def start_job(job_type: str) -> bool:
                 "returncode": None,
                 "message": message,
                 "output": "",
+                "progress": {
+                    "done": 0,
+                    "rows": 0,
+                    "errors": 0,
+                    "current": "",
+                    "scope": message,
+                },
             }
         )
-    thread = threading.Thread(target=run_tracker_command, args=(job_type,), daemon=True)
+    thread = threading.Thread(target=run_tracker_command, args=(job_type, brand, model), daemon=True)
     thread.start()
     return True
 
 
-def run_tracker_command(job_type: str) -> None:
+def run_tracker_command(job_type: str, brand: str = "all", model: str = "") -> None:
     if job_type == "catalog":
-        command = [sys.executable, str(ROOT / "spareprice.py"), "discover-all", "--brand", "all", "--delay", "1"]
+        command = [sys.executable, str(ROOT / "spareprice.py"), "discover-all", "--brand", brand, "--delay", "1"]
+        if model:
+            command.extend(["--model", model])
     else:
         command = [sys.executable, str(ROOT / "spareprice.py"), "run", "--config", str(DEFAULT_CONFIG)]
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=ROOT,
             text=True,
-            capture_output=True,
-            timeout=3600,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
         )
-        output = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
-        message = "Price check complete" if result.returncode == 0 else "Price check finished with errors"
+        output_lines = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            clean = line.strip()
+            if not clean:
+                continue
+            output_lines.append(clean)
+            if len(output_lines) > 200:
+                output_lines = output_lines[-200:]
+            update_job_progress(clean, "\n".join(output_lines)[-6000:])
+
+        returncode = process.wait(timeout=3600)
+        output = "\n".join(output_lines).strip()
+        message = "Price check complete" if returncode == 0 else "Price check finished with errors"
         if job_type == "catalog":
-            message = "Catalog discovery complete" if result.returncode == 0 else "Catalog discovery finished with errors"
+            message = "Catalog discovery complete" if returncode == 0 else "Catalog discovery finished with errors"
         with job_lock:
             job_state.update(
                 {
                     "running": False,
                     "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "returncode": result.returncode,
+                    "returncode": returncode,
                     "message": message,
                     "output": output[-6000:],
                 }

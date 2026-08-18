@@ -98,6 +98,12 @@ def browser_launch_args() -> list[str]:
     return ["--no-sandbox", "--disable-dev-shm-usage"]
 
 
+def model_matches_filter(model: str, model_filter: str | None) -> bool:
+    if not model_filter:
+        return True
+    return model_filter.lower() in model.lower()
+
+
 def connect_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -258,6 +264,7 @@ async def discover_all(
     samsung_series: str | None,
     oppo_series: str | None,
     realme_series: str | None,
+    model_filter: str | None = None,
 ) -> int:
     from playwright.async_api import async_playwright
 
@@ -266,20 +273,26 @@ async def discover_all(
         browser = await playwright.chromium.launch(headless=True, args=browser_launch_args())
         context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
         if brand in {"all", "apple"}:
-            await discover_apple(context, conn, delay_seconds, max_models)
+            await discover_apple(context, conn, delay_seconds, max_models, model_filter)
         await context.close()
         if brand in {"all", "samsung"}:
-            await discover_samsung(browser, conn, delay_seconds, max_models, samsung_series)
+            await discover_samsung(browser, conn, delay_seconds, max_models, samsung_series, model_filter)
         if brand in {"all", "oppo"}:
-            await discover_oppo(browser, conn, delay_seconds, max_models, oppo_series)
+            await discover_oppo(browser, conn, delay_seconds, max_models, oppo_series, model_filter)
         if brand in {"all", "realme"}:
-            await discover_realme(browser, conn, delay_seconds, max_models, realme_series)
+            await discover_realme(browser, conn, delay_seconds, max_models, realme_series, model_filter)
         await browser.close()
     conn.close()
     return 0
 
 
-async def discover_apple(context: Any, conn: sqlite3.Connection, delay_seconds: float, max_models: int | None) -> None:
+async def discover_apple(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
     url = "https://support.apple.com/en-in/iphone/repair?services=service"
     page = await context.new_page()
     page.set_default_timeout(45000)
@@ -297,12 +310,15 @@ async def discover_apple(context: Any, conn: sqlite3.Connection, delay_seconds: 
                 "select => [...select.options].map(option => option.textContent.trim()).filter(Boolean)"
             )
             for model_label in model_labels:
+                if not model_matches_filter(model_label, model_filter):
+                    continue
                 if max_models is not None and count >= max_models:
                     return
                 await page.locator("select.model-dropdown").first.select_option(label=model_label)
                 await page.wait_for_timeout(1500)
                 text = await page.locator("body").inner_text()
-                for part, price_text, value in parse_apple_service_prices(text):
+                price_rows = parse_apple_service_prices(text)
+                for part, price_text, value in price_rows:
                     entry = TrackerEntry("Apple", model_label, part, url, "INR", [], "body")
                     save_result(
                         conn,
@@ -314,7 +330,7 @@ async def discover_apple(context: Any, conn: sqlite3.Connection, delay_seconds: 
                         "ok",
                     )
                 count += 1
-                LOGGER.info("Discovered Apple %s (%s/%s)", model_label, count, max_models or "all")
+                LOGGER.info("Discovered Apple %s (%s rows, %s/%s)", model_label, len(price_rows), count, max_models or "all")
                 await asyncio.sleep(delay_seconds)
     except Exception:
         LOGGER.exception("Apple catalog discovery failed")
@@ -328,6 +344,7 @@ async def discover_samsung(
     delay_seconds: float,
     max_models: int | None,
     samsung_series: str | None = None,
+    model_filter: str | None = None,
 ) -> None:
     url = "https://www.samsung.com/in/support/spare-part-pricing-list-for-repair/"
     series_values = [
@@ -370,6 +387,8 @@ async def discover_samsung(
                 continue
             seen_models: set[str] = set()
             for model_value in model_values:
+                if not model_matches_filter(model_value, model_filter):
+                    continue
                 if model_value in seen_models:
                     continue
                 seen_models.add(model_value)
@@ -405,7 +424,7 @@ async def discover_samsung(
                             "ok",
                         )
                     count += 1
-                    LOGGER.info("Discovered Samsung %s (%s/%s)", model_value, count, max_models or "all")
+                    LOGGER.info("Discovered Samsung %s (%s rows, %s/%s)", model_value, len(rows), count, max_models or "all")
                     await asyncio.sleep(delay_seconds)
                 except Exception:
                     LOGGER.exception("Samsung model discovery failed: %s", model_value)
@@ -462,6 +481,7 @@ async def discover_oppo(
     delay_seconds: float,
     max_models: int | None,
     oppo_series: str | None = None,
+    model_filter: str | None = None,
 ) -> None:
     url = "https://support.oppo.com/in/spare-parts-price/#/"
     series_labels = OPPO_MOBILE_SERIES
@@ -481,6 +501,7 @@ async def discover_oppo(
             try:
                 await open_oppo_series(page, url, series_label)
                 product_names = await visible_texts(page, ".product-item")
+                product_names = [name for name in product_names if model_matches_filter(name, model_filter)]
                 LOGGER.info("OPPO %s models found: %s", series_label, len(product_names))
             except Exception:
                 LOGGER.exception("OPPO series discovery failed: %s", series_label)
@@ -516,6 +537,7 @@ async def discover_realme(
     delay_seconds: float,
     max_models: int | None,
     realme_series: str | None = None,
+    model_filter: str | None = None,
 ) -> None:
     url = "https://www.realme.com/in/support/spare-parts-price"
     series_labels = REALME_MOBILE_SERIES
@@ -531,6 +553,7 @@ async def discover_realme(
             try:
                 await open_realme_series(page, url, series_label)
                 product_names = await visible_texts(page, ".main-right .item")
+                product_names = [name for name in product_names if model_matches_filter(name, model_filter)]
                 LOGGER.info("realme %s models found: %s", series_label, len(product_names))
             except Exception:
                 LOGGER.exception("realme series discovery failed: %s", series_label)
@@ -960,6 +983,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--brand", choices=["all", "apple", "samsung", "oppo", "realme"], default="all")
     discover_parser.add_argument("--delay", type=float, default=3.0)
     discover_parser.add_argument("--max-models", type=int)
+    discover_parser.add_argument("--model", help="Only crawl models containing this text.")
     discover_parser.add_argument(
         "--samsung-series",
         choices=["galaxy-z", "galaxy-s", "galaxy-a", "galaxy-m", "galaxy-f", "galaxy-tab"],
@@ -1003,7 +1027,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "discover-all":
         return asyncio.run(
-            discover_all(args.brand, args.delay, args.max_models, args.samsung_series, args.oppo_series, args.realme_series)
+            discover_all(
+                args.brand,
+                args.delay,
+                args.max_models,
+                args.samsung_series,
+                args.oppo_series,
+                args.realme_series,
+                args.model,
+            )
         )
     raise AssertionError(f"Unhandled command: {args.command}")
 
