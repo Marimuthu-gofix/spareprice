@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "spareprice-dashboard",
+      "runtimeExecutable": "D:\\spare_price_scraper\\spareprice\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["dashboard.py"],
+      "port": 5000
+    }
+  ]
+}

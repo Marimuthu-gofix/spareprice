@@ -6,66 +6,70 @@
     <title>Spareprice Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
   </head>
+  {% macro sort_header(key, label) %}
+    {% set next_dir = 'asc' if (sort == key and sort_dir == 'desc') else 'desc' %}
+    <th class="sortable">
+      <a class="sort-link {{ 'active' if sort == key else '' }}" href="{{ url_for('index', sort=key, dir=next_dir, q=search, brand=selected_brands, status=selected_status, per_page=selected_per_page, page=1) }}">
+        {{ label }}
+        <span class="sort-icon">{% if sort == key %}{{ icon('asc') if sort_dir == 'asc' else icon('desc') }}{% else %}{{ icon('sort-none') }}{% endif %}</span>
+      </a>
+    </th>
+  {% endmacro %}
   <body>
+    <div id="topLoader" class="top-loader" aria-hidden="true"></div>
+
     <header class="topbar">
-      <div>
+      <div class="brand-block">
         <p class="eyebrow">Spareprice</p>
         <h1>Spare Part Price Dashboard</h1>
       </div>
-      <div class="toolbar">
-        {% if hosted_read_only %}
-          <div class="readonly-actions">
-            <strong>Live view only</strong>
-            <span>Update prices locally, then push to refresh this site.</span>
-          </div>
-        {% else %}
-          <form action="{{ url_for('check_now') }}" method="post">
-            <button data-job-button data-idle-label="Check All Prices" data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
-              {% if job.running %}Checking...{% else %}Check All Prices{% endif %}
-            </button>
-          </form>
-          <form action="{{ url_for('discover_all_now') }}" method="post">
-            <button data-job-button data-idle-label="Discover All Mobiles" data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
-              {% if job.running %}Working...{% else %}Discover All Mobiles{% endif %}
-            </button>
-          </form>
-        {% endif %}
-        <form class="filters" method="get">
-          <input name="q" value="{{ search }}" placeholder="Search model or part">
-          <select name="brand">
-            <option value="">All brands</option>
-            {% for brand in brands %}
-              <option value="{{ brand }}" {% if selected_brand == brand %}selected{% endif %}>{{ brand }}</option>
-            {% endfor %}
-          </select>
-          <input type="hidden" name="per_page" value="{{ selected_per_page }}">
-          <button type="submit">Filter</button>
-        </form>
+      <div class="header-actions">
+        <button type="button" class="icon-btn" data-action="refresh" title="Refresh">
+          {{ icon('refresh') }}
+          <span>Refresh</span>
+        </button>
+        <a class="icon-btn" href="{{ url_for('export_csv_now', **base_query) }}" title="Export current view to CSV">
+          {{ icon('download') }}
+          <span>Export CSV</span>
+        </a>
+        <span class="mode-pill {{ 'readonly' if hosted_read_only else 'live' }}">
+          {{ icon('dot') }}
+          {{ "Hosted (read-only)" if hosted_read_only else "Local (live)" }}
+        </span>
       </div>
     </header>
 
     <main>
       <section id="jobStatus" class="job-status {% if job.running %}running{% endif %}" data-running="{{ 'true' if job.running else 'false' }}">
-        <strong>{% if hosted_read_only %}Hosted dashboard is read-only{% else %}{{ job.message }}{% endif %}</strong>
-        <span>
-          {% if hosted_read_only %}
-            Run scraper locally and push the updated database to refresh Vercel.
-          {% elif job.running %}
-            Time: calculating... | Done: {{ job.progress.done or 0 }} models | Rows saved: {{ job.progress.rows or 0 }} | Errors: {{ job.progress.errors or 0 }}{% if job.progress.current %} | Current: {{ job.progress.current }}{% endif %}
-          {% elif job.started_at %}
-            Started {{ job.started_at|localdate }}
-          {% else %}
-            Click a button to scrape configured devices or discover all supported mobiles.
-          {% endif %}
-        </span>
+        <div class="job-status-text">
+          <strong>{% if hosted_read_only %}Hosted dashboard is read-only{% else %}{{ job.message }}{% endif %}</strong>
+          <span>
+            {% if hosted_read_only %}
+              Run the scraper locally and push the updated database to refresh this view.
+            {% elif job.running %}
+              Time: calculating... | Done: {{ job.progress.done or 0 }} models | Rows saved: {{ job.progress.rows or 0 }} | Errors: {{ job.progress.errors or 0 }}{% if job.progress.current %} | Current: {{ job.progress.current }}{% endif %}
+            {% elif job.started_at %}
+              Started {{ job.started_at|localdate }}
+            {% else %}
+              Click a button below to scrape configured devices or discover all supported mobiles.
+            {% endif %}
+          </span>
+        </div>
+        {% if job.running %}<div class="job-bar"><i></i></div>{% endif %}
       </section>
 
       {% if not hosted_read_only %}
-        <section class="scope-panel">
-          <div>
-            <h2>Scrape by Brand or Model</h2>
-            <p>Run a smaller live check for one brand or a model name match.</p>
-          </div>
+        <section class="scrape-toolbar">
+          <form action="{{ url_for('check_now') }}" method="post">
+            <button data-job-button data-idle-label="Check All Prices" data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
+              {{ icon('play') }} {% if job.running %}Checking...{% else %}Check All Prices{% endif %}
+            </button>
+          </form>
+          <form action="{{ url_for('discover_all_now') }}" method="post">
+            <button data-job-button data-idle-label="Discover All Mobiles" data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
+              {{ icon('search') }} {% if job.running %}Working...{% else %}Discover All Mobiles{% endif %}
+            </button>
+          </form>
           <form action="{{ url_for('discover_scope_now') }}" method="post" class="scope-form">
             <select name="scrape_brand" aria-label="Scrape brand">
               <option value="all">All brands</option>
@@ -78,112 +82,197 @@
               <option value="vivo">vivo</option>
             </select>
             <input name="scrape_model" placeholder="Model contains, e.g. iPhone 14">
-            <button data-job-button data-idle-label="Scrape Selected" data-running-label="Scraping..." data-start-label="Scraping selected brand/model prices..." type="submit">Scrape Selected</button>
+            <button data-job-button data-idle-label="Scrape Selected" data-running-label="Scraping..." data-start-label="Scraping selected brand/model prices..." type="submit" {% if job.running %}disabled{% endif %}>
+              {{ icon('target') }} Scrape Selected
+            </button>
           </form>
         </section>
       {% endif %}
 
       <section class="stats" aria-label="Dashboard summary">
         <article>
-          <span>Tracked items</span>
-          <strong>{{ stats.tracked }}</strong>
+          {{ icon('box') }}
+          <div>
+            <strong>{{ stats.tracked }}</strong>
+            <span>Tracked spare parts</span>
+          </div>
         </article>
         <article>
-          <span>Brands</span>
-          <strong>{{ stats.brands }}</strong>
+          {{ icon('layers') }}
+          <div>
+            <strong>{{ stats.models }}</strong>
+            <span>Models tracked across {{ stats.brands }} brands</span>
+          </div>
         </article>
         <article>
-          <span>Total latest value</span>
-          <strong>{{ stats.total_value|money("INR") }}</strong>
+          {{ icon('clock') }}
+          <div>
+            <strong>{{ stats.updated_today }}</strong>
+            <span>Prices updated today</span>
+          </div>
         </article>
         <article>
-          <span>Last successful check</span>
-          <strong>{{ stats.last_success|localdate }}</strong>
+          {{ icon('tag') }}
+          <div>
+            <strong>{{ stats.average_value|money("INR") if stats.average_value is not none else "-" }}</strong>
+            <span>Average spare part price</span>
+          </div>
         </article>
       </section>
 
-      <!-- <section class="panel chart-panel">
-        <div class="panel-heading">
-          <h2>Price Trend</h2>
-          <p>{{ chart_note }}</p>
-        </div>
-        <div class="chart-wrap">
-          <svg id="trendChart" role="img" aria-label="Price trend chart"></svg>
-        </div>
-        <div id="chartLegend" class="chart-legend"></div>
-      </section> -->
-
       <section class="panel">
         <div class="panel-heading">
-          <h2>Latest Prices</h2>
-          <p>
-            {% if pagination.total %}
-              Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} prices
-            {% else %}
-              0 current model and spare-part prices
-            {% endif %}
-          </p>
+          <div>
+            <h2>Latest Prices</h2>
+            <p>
+              {% if pagination.total %}
+                Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} spare parts
+              {% else %}
+                0 current model and spare-part prices
+              {% endif %}
+            </p>
+          </div>
+          <button type="button" class="ghost-btn" id="toggleGroupsButton" data-collapsed-label="Expand all models" data-expanded-label="Collapse all models" hidden>Expand all models</button>
         </div>
+
+        <form class="filter-bar" method="get" id="filterForm">
+          <input type="hidden" name="sort" value="{{ sort }}">
+          <input type="hidden" name="dir" value="{{ sort_dir }}">
+          <div class="filter-search">
+            {{ icon('search-sm') }}
+            <input name="q" value="{{ search }}" placeholder="Search model or spare part..." list="spareSuggestions" autocomplete="off">
+            <datalist id="spareSuggestions">
+              {% for suggestion in suggestions %}
+                <option value="{{ suggestion }}"></option>
+              {% endfor %}
+            </datalist>
+          </div>
+          <details class="brand-select">
+            <summary aria-label="Filter by brand">
+              {% if not selected_brands %}
+                All brands
+              {% elif selected_brands|length == 1 %}
+                {{ selected_brands[0] }}
+              {% else %}
+                {{ selected_brands|length }} brands
+              {% endif %}
+              {{ icon('chevron') }}
+            </summary>
+            <div class="brand-select-panel">
+              {% for brand in brands %}
+                <label>
+                  <input type="checkbox" name="brand" value="{{ brand }}" {% if brand in selected_brands %}checked{% endif %}>
+                  {{ brand }}
+                </label>
+              {% endfor %}
+            </div>
+          </details>
+          <select name="per_page" aria-label="Rows per page">
+            {% for option in per_page_options %}
+              <option value="{{ option }}" {% if selected_per_page == option %}selected{% endif %}>{{ option }} rows</option>
+            {% endfor %}
+          </select>
+          <input type="hidden" name="page" value="1">
+          <div class="filter-actions">
+            <a class="ghost-btn" href="{{ url_for('index') }}">Reset</a>
+            <button type="submit">Apply Filters</button>
+          </div>
+        </form>
+
+        {% if active_filters %}
+          <div class="filter-chips">
+            <span class="filter-chips-label">Active filters:</span>
+            {% for filter in active_filters %}
+              <a class="chip" href="{{ filter.remove_url }}">{{ filter.label }} <span aria-hidden="true">&times;</span></a>
+            {% endfor %}
+          </div>
+        {% endif %}
+
         <div class="table-wrap">
-          <table>
+          <table class="data-table" data-expandable>
             <thead>
               <tr>
-                <th>Brand</th>
-                <th>Model</th>
-                <th>Spare Part</th>
-                <th>Latest Price</th>
-                <th>Last Checked</th>
+                <th></th>
+                {{ sort_header('brand', 'Brand') }}
+                {{ sort_header('model', 'Model') }}
+                {{ sort_header('part', 'Spare Part') }}
+                {{ sort_header('price', 'Latest Price') }}
+                {{ sort_header('date', 'Last Checked') }}
                 <th>Source</th>
               </tr>
             </thead>
             <tbody>
-              {% for row in latest %}
-                <tr>
-                  <td><span class="brand">{{ row.brand }}</span></td>
-                  <td>{{ row.model }}</td>
-                  <td>{{ row.part }}</td>
-                  <td class="price">{{ row.price_value|money(row.currency) }}</td>
-                  <td>{{ row.date|localdate }}</td>
-                  <td><a href="{{ row.url }}" target="_blank" rel="noreferrer">Open</a></td>
+              {% for row, group_start, group_size, group_id in latest %}
+                {% if group_start and group_size > 1 %}
+                  <tr class="group-header" data-group="{{ group_id }}" tabindex="0" role="button" aria-expanded="false">
+                    <td class="expand-cell">{{ icon('chevron') }}</td>
+                    <td colspan="2"><span class="badge badge-brand">{{ row.brand }}</span> <strong class="group-model">{{ row.model }}</strong></td>
+                    <td colspan="4" class="group-meta">{{ group_size }} parts</td>
+                  </tr>
+                {% endif %}
+                <tr class="row-toggle {{ 'group-child' if group_size > 1 else '' }}" data-group="{{ group_id if group_size > 1 else '' }}" data-drawer-title="{{ row.brand }} {{ row.model }} &middot; {{ row.part }}" {{ 'hidden' if group_size > 1 }} tabindex="0">
+                  <td class="expand-cell">{{ icon('chevron') }}</td>
+                  <td data-label="Brand" class="{{ 'grouped-cell' if group_size > 1 else '' }}"><span class="badge badge-brand">{{ row.brand }}</span></td>
+                  <td data-label="Model" class="{{ 'grouped-cell' if group_size > 1 else '' }}">{{ row.model }}</td>
+                  <td data-label="Spare Part">{{ row.part }}</td>
+                  <td data-label="Latest Price" class="price">{{ row.price_value|money(row.currency) }}</td>
+                  <td data-label="Last Checked">{{ row.date|localdate }}</td>
+                  <td data-label="Source"><a href="{{ row.url }}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Open&nbsp;&#8599;</a></td>
                 </tr>
+                <template class="row-detail-template">
+                  <div class="detail-grid">
+                    <div><span>Latest price</span><strong>{{ row.price_value|money(row.currency) }}</strong></div>
+                    <div><span>Currency</span><strong>{{ row.currency or "-" }}</strong></div>
+                    <div><span>Recorded text</span><strong>{{ row.price or "-" }}</strong></div>
+                    <div><span>Last checked</span><strong>{{ row.date|localdate }}</strong></div>
+                    <div><span>Source URL</span><strong class="truncate"><a href="{{ row.url }}" target="_blank" rel="noreferrer">{{ row.url }}</a></strong></div>
+                  </div>
+                </template>
               {% else %}
-                <tr><td colspan="6" class="empty">No matching prices yet.</td></tr>
+                <tr class="empty-row">
+                  <td colspan="7">
+                    <div class="empty-state">
+                      {{ icon('empty') }}
+                      <strong>No spare parts found.</strong>
+                      <span>Try changing your filters or search terms.</span>
+                    </div>
+                  </td>
+                </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
+
         <div class="table-footer">
-          <form class="filters footer-filters" method="get">
-            <input name="q" value="{{ search }}" placeholder="Search model or part">
-            <select name="brand">
-              <option value="">All brands</option>
-              {% for brand in brands %}
-                <option value="{{ brand }}" {% if selected_brand == brand %}selected{% endif %}>{{ brand }}</option>
-              {% endfor %}
-            </select>
-            <select name="per_page">
-              {% for option in per_page_options %}
-                <option value="{{ option }}" {% if selected_per_page == option %}selected{% endif %}>{{ option }} rows</option>
-              {% endfor %}
-            </select>
-            <input type="hidden" name="page" value="1">
-            <button type="submit">Apply</button>
-          </form>
+          <span class="footer-summary">
+            {% if pagination.total %}
+              Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} spare parts
+            {% else %}
+              Showing 0 of 0 spare parts
+            {% endif %}
+          </span>
           <nav class="pagination" aria-label="Latest prices pages">
             {% if pagination.has_prev %}
-              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=1) }}">First</a>
-              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=pagination.prev_page) }}">Prev</a>
+              <a href="{{ url_for('index', page=1, **base_query) }}">First</a>
+              <a href="{{ url_for('index', page=pagination.prev_page, **base_query) }}">Prev</a>
             {% else %}
-              <span>First</span>
-              <span>Prev</span>
+              <span class="disabled">First</span>
+              <span class="disabled">Prev</span>
             {% endif %}
-            <strong>Page {{ pagination.page }} of {{ pagination.total_pages }}</strong>
+            {% for number in pagination.page_numbers %}
+              {% if not loop.first and number != loop.previtem + 1 %}<span class="ellipsis">&hellip;</span>{% endif %}
+              {% if number == pagination.page %}
+                <strong class="current-page">{{ number }}</strong>
+              {% else %}
+                <a href="{{ url_for('index', page=number, **base_query) }}">{{ number }}</a>
+              {% endif %}
+            {% endfor %}
             {% if pagination.has_next %}
-              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=pagination.next_page) }}">Next</a>
-              <a href="{{ url_for('index', q=search, brand=selected_brand, per_page=selected_per_page, page=pagination.total_pages) }}">Last</a>
+              <a href="{{ url_for('index', page=pagination.next_page, **base_query) }}">Next</a>
+              <a href="{{ url_for('index', page=pagination.total_pages, **base_query) }}">Last</a>
             {% else %}
-              <span>Next</span>
-              <span>Last</span>
+              <span class="disabled">Next</span>
+              <span class="disabled">Last</span>
             {% endif %}
           </nav>
         </div>
@@ -194,10 +283,25 @@
           <h2>Recent Checks</h2>
           <p>Last 100 records, including errors</p>
         </div>
+
+        <form class="filter-bar filter-bar-compact" method="get">
+          <input type="hidden" name="q" value="{{ search }}">
+          {% for brand in selected_brands %}
+            <input type="hidden" name="brand" value="{{ brand }}">
+          {% endfor %}
+          <input type="hidden" name="per_page" value="{{ selected_per_page }}">
+          <select name="status" aria-label="Filter by status" onchange="this.form.submit()">
+            <option value="" {% if not selected_status %}selected{% endif %}>All statuses</option>
+            <option value="ok" {% if selected_status == "ok" %}selected{% endif %}>Available (ok)</option>
+            <option value="error" {% if selected_status == "error" %}selected{% endif %}>Failed (error)</option>
+          </select>
+        </form>
+
         <div class="table-wrap">
-          <table>
+          <table class="data-table" data-expandable>
             <thead>
               <tr>
+                <th></th>
                 <th>Date</th>
                 <th>Brand</th>
                 <th>Model</th>
@@ -208,22 +312,54 @@
             </thead>
             <tbody>
               {% for row in history %}
-                <tr>
-                  <td>{{ row.date|localdate }}</td>
-                  <td>{{ row.brand }}</td>
-                  <td>{{ row.model }}</td>
-                  <td>{{ row.part }}</td>
-                  <td>{{ row.price or row.error or "-" }}</td>
-                  <td><span class="status {{ row.status }}">{{ row.status }}</span></td>
+                <tr class="row-toggle" data-drawer-title="{{ row.brand }} {{ row.model }} &middot; {{ row.part }}" tabindex="0">
+                  <td class="expand-cell">{{ icon('chevron') }}</td>
+                  <td data-label="Date">{{ row.date|localdate }}</td>
+                  <td data-label="Brand"><span class="badge badge-brand">{{ row.brand }}</span></td>
+                  <td data-label="Model">{{ row.model }}</td>
+                  <td data-label="Part">{{ row.part }}</td>
+                  <td data-label="Recorded Text">{{ row.price or row.error or "-" }}</td>
+                  <td data-label="Status">
+                    <span class="badge badge-status-{{ row.status }}">
+                      {{ icon('check') if row.status == 'ok' else icon('alert') }}
+                      {{ "Available" if row.status == 'ok' else "Error" }}
+                    </span>
+                  </td>
                 </tr>
+                <template class="row-detail-template">
+                  <div class="detail-grid">
+                    <div><span>Checked</span><strong>{{ row.date|localdate }}</strong></div>
+                    <div><span>Currency</span><strong>{{ row.currency or "-" }}</strong></div>
+                    <div><span>Status</span><strong>{{ row.status }}</strong></div>
+                    <div><span>Error</span><strong>{{ row.error or "-" }}</strong></div>
+                    <div><span>Source URL</span><strong class="truncate"><a href="{{ row.url }}" target="_blank" rel="noreferrer">{{ row.url }}</a></strong></div>
+                  </div>
+                </template>
               {% else %}
-                <tr><td colspan="6" class="empty">No checks recorded yet.</td></tr>
+                <tr class="empty-row">
+                  <td colspan="7">
+                    <div class="empty-state">
+                      {{ icon('empty') }}
+                      <strong>No checks recorded yet.</strong>
+                      <span>Run a scrape to populate this list.</span>
+                    </div>
+                  </td>
+                </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       </section>
     </main>
+
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="detailDrawer" class="drawer" hidden aria-hidden="true" role="dialog" aria-label="Row details">
+      <div class="drawer-header">
+        <h3 id="drawerTitle"></h3>
+        <button type="button" class="drawer-close" id="drawerClose" aria-label="Close details"><span aria-hidden="true">&times;</span></button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+    </aside>
 
     <script id="spareprice-series" type="application/json">{{ chart_json|safe }}</script>
     <script src="{{ url_for('static', filename='dashboard.js') }}"></script>

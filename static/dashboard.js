@@ -5,7 +5,159 @@
   const chartLegend = document.getElementById("chartLegend");
   const jobButtons = [...document.querySelectorAll("[data-job-button]")];
   const jobStatus = document.getElementById("jobStatus");
+  const topLoader = document.getElementById("topLoader");
   const colors = ["#2563eb", "#0f8f68", "#b45309", "#7c3aed", "#dc2626", "#0891b2"];
+
+  // ---------- top loading bar on full-page navigation ----------
+  function showTopLoader() {
+    if (topLoader) topLoader.classList.add("active");
+  }
+  document.querySelectorAll("a[href]:not([target='_blank'])").forEach((link) => {
+    link.addEventListener("click", showTopLoader);
+  });
+  document.querySelectorAll("form").forEach((form) => {
+    if (form.hasAttribute("data-job-form-skip")) return;
+    const submitButton = form.querySelector("[data-job-button]");
+    if (submitButton) return; // handled separately via fetch
+    form.addEventListener("submit", showTopLoader);
+  });
+
+  // ---------- dynamic sticky offsets ----------
+  // The topbar and filter-bar heights vary with content (job status, hosted
+  // vs. live actions, wrapped filter rows on narrow screens), so measure the
+  // rendered heights instead of guessing fixed pixel offsets that drift out
+  // of sync and make the sticky table header overlap rows.
+  function updateStickyOffsets() {
+    const topbar = document.querySelector(".topbar");
+    const filterBar = document.querySelector(".filter-bar:not(.filter-bar-compact)");
+    const filterBarCompact = document.querySelector(".filter-bar-compact");
+    const root = document.documentElement.style;
+    if (topbar) root.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
+    if (filterBar) root.setProperty("--filter-h", `${filterBar.offsetHeight}px`);
+    if (filterBarCompact) root.setProperty("--filter-compact-h", `${filterBarCompact.offsetHeight}px`);
+  }
+  updateStickyOffsets();
+  window.addEventListener("resize", updateStickyOffsets);
+  window.addEventListener("load", updateStickyOffsets);
+
+  // ---------- refresh button ----------
+  const refreshButton = document.querySelector("[data-action='refresh']");
+  if (refreshButton) {
+    refreshButton.addEventListener("click", () => {
+      showTopLoader();
+      window.location.reload();
+    });
+  }
+
+  // ---------- row details drawer ----------
+  // Each row-toggle is followed by an inert <template> holding its detail
+  // markup (server-rendered, so links/text stay escaped correctly); clicking
+  // the row clones that template into a shared slide-in drawer instead of
+  // expanding an inline row, so the table stops jumping around as you browse.
+  const drawer = document.getElementById("detailDrawer");
+  const drawerBackdrop = document.getElementById("drawerBackdrop");
+  const drawerTitle = document.getElementById("drawerTitle");
+  const drawerBody = document.getElementById("drawerBody");
+  const drawerClose = document.getElementById("drawerClose");
+  let activeDrawerRow = null;
+
+  function openDrawer(row, template) {
+    if (activeDrawerRow) activeDrawerRow.classList.remove("expanded");
+    activeDrawerRow = row;
+    row.classList.add("expanded");
+    drawerTitle.innerHTML = row.dataset.drawerTitle || "Details";
+    drawerBody.innerHTML = "";
+    drawerBody.appendChild(template.content.cloneNode(true));
+    drawer.hidden = false;
+    drawerBackdrop.hidden = false;
+    drawer.setAttribute("aria-hidden", "false");
+    requestAnimationFrame(() => {
+      drawer.classList.add("open");
+      drawerBackdrop.classList.add("open");
+    });
+  }
+
+  function closeDrawer() {
+    if (activeDrawerRow) activeDrawerRow.classList.remove("expanded");
+    activeDrawerRow = null;
+    drawer.classList.remove("open");
+    drawerBackdrop.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    window.setTimeout(() => {
+      if (!drawer.classList.contains("open")) {
+        drawer.hidden = true;
+        drawerBackdrop.hidden = true;
+      }
+    }, 200);
+  }
+
+  document.querySelectorAll("tr.row-toggle").forEach((row) => {
+    const template = row.nextElementSibling;
+    if (!template || template.tagName !== "TEMPLATE") return;
+    const toggle = () => {
+      if (activeDrawerRow === row) {
+        closeDrawer();
+      } else {
+        openDrawer(row, template);
+      }
+    };
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("a")) return;
+      toggle();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    });
+  });
+
+  if (drawerClose) drawerClose.addEventListener("click", closeDrawer);
+  if (drawerBackdrop) drawerBackdrop.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && activeDrawerRow) closeDrawer();
+  });
+
+  // ---------- model accordions ----------
+  // Consecutive same-model rows are tagged group-header/group-child by
+  // dashboard.py; the header toggles its members' [hidden] attribute
+  // (collapsed by default) instead of navigating anywhere.
+  const groupHeaders = [...document.querySelectorAll("tr.group-header")];
+  const toggleGroupsButton = document.getElementById("toggleGroupsButton");
+
+  function setGroupExpanded(header, expanded) {
+    header.classList.toggle("expanded", expanded);
+    header.setAttribute("aria-expanded", expanded ? "true" : "false");
+    const groupId = header.dataset.group;
+    document.querySelectorAll(`tr.row-toggle[data-group="${groupId}"]`).forEach((row) => {
+      row.hidden = !expanded;
+      if (!expanded && activeDrawerRow === row) closeDrawer();
+    });
+  }
+
+  groupHeaders.forEach((header) => {
+    const toggle = () => setGroupExpanded(header, !header.classList.contains("expanded"));
+    header.addEventListener("click", toggle);
+    header.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    });
+  });
+
+  if (toggleGroupsButton && groupHeaders.length) {
+    toggleGroupsButton.hidden = false;
+    toggleGroupsButton.textContent = toggleGroupsButton.dataset.collapsedLabel;
+    toggleGroupsButton.addEventListener("click", () => {
+      const willExpand = toggleGroupsButton.textContent === toggleGroupsButton.dataset.collapsedLabel;
+      groupHeaders.forEach((header) => setGroupExpanded(header, willExpand));
+      toggleGroupsButton.textContent = willExpand
+        ? toggleGroupsButton.dataset.expandedLabel
+        : toggleGroupsButton.dataset.collapsedLabel;
+    });
+  }
 
   function draw() {
     if (!svg) return;
