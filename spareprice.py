@@ -423,9 +423,7 @@ async def discover_samsung(
                         """
                     )
                     for row in rows:
-                        part = normalize_space(row["title"].replace("•", "-"))
-                        price_text = f"{part} {row['price']}"
-                        _, value = parse_price(price_text)
+                        part, price_text, value = parse_samsung_row(row["title"], row["price"])
                         entry = TrackerEntry("Samsung", model_value, part, url, "INR", [], "body")
                         save_result(
                             conn,
@@ -446,6 +444,20 @@ async def discover_samsung(
         finally:
             await page.close()
             await context.close()
+
+
+def parse_samsung_row(title: str, price: str) -> tuple[str, str, float | None]:
+    part = normalize_space(title.replace("\u2022", "-"))
+    # FRAGILE SITE ASSUMPTION: Samsung's storage-only rows are motherboard
+    # variants. The amount must come only from .result-price, never the title.
+    storage = re.fullmatch(r"-?\s*(\d+\s*(?:GB|TB))", part, re.IGNORECASE)
+    if storage:
+        part = f"Motherboard - {storage.group(1).upper()}"
+    amount = normalize_space(price)
+    if re.search(r"\d\s*(?:GB|TB)", amount, re.IGNORECASE):
+        raise ValueError(f"Storage label found in Samsung price cell: {amount!r}")
+    _, value = parse_price(amount)
+    return part, f"{part} {amount}", value
 
 
 async def load_samsung_models_for_series(page: Any, series_value: str, series_label: str) -> list[str]:
