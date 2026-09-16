@@ -80,8 +80,11 @@
               <option value="oneplus">OnePlus</option>
               <option value="mi">Mi / Xiaomi</option>
               <option value="vivo">vivo</option>
+              <option value="iqoo">iQOO</option>
+              <option value="motorola">Motorola</option>
+              <option value="cashify">Cashify</option>
             </select>
-            <input name="scrape_model" placeholder="Model contains, e.g. iPhone 14">
+            <input name="scrape_model" placeholder="Model or Cashify brand, e.g. Nokia">
             <button data-job-button data-idle-label="Scrape Selected" data-running-label="Scraping..." data-start-label="Scraping selected brand/model prices..." type="submit" {% if job.running %}disabled{% endif %}>
               {{ icon('target') }} Scrape Selected
             </button>

@@ -26,6 +26,13 @@ DEFAULT_DB = ROOT / "price_history.sqlite3"
 DEFAULT_CONFIG = ROOT / "config.json"
 HOSTED_READ_ONLY = bool(os.environ.get("VERCEL"))
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Kolkata")
+SUPPORTED_BRANDS = [
+    "Apple", "Asus", "Google", "Honor", "Infinix", "iQOO", "Mi", "Motorola",
+    "Nokia", "Nothing", "OnePlus", "OPPO", "POCO", "realme", "Samsung", "vivo", "Xiaomi",
+]
+SCRAPE_BRANDS = {
+    "all", "apple", "samsung", "oppo", "realme", "oneplus", "mi", "vivo", "iqoo", "motorola", "cashify",
+}
 
 app = Flask(__name__)
 job_lock = threading.Lock()
@@ -210,7 +217,7 @@ def load_dashboard(
         if row["status"] == "ok":
             latest_by_key[key] = row
 
-    brands = sorted({row["brand"] for row in rows} | {row["brand"] for row in latest_by_key.values()})
+    brands = sorted(set(SUPPORTED_BRANDS) | {row["brand"] for row in rows} | {row["brand"] for row in latest_by_key.values()})
     latest = sorted(latest_by_key.values(), key=lambda r: (r["brand"], r["model"], r["part"]))
     if selected_brands_lower:
         latest = [row for row in latest if row["brand"].lower() in selected_brands_lower]
@@ -472,7 +479,7 @@ def discover_scope_now() -> Any:
         return hosted_read_only_response()
     brand = request.form.get("scrape_brand", "").strip().lower() or "all"
     model = request.form.get("scrape_model", "").strip()
-    if brand not in {"all", "apple", "samsung", "oppo", "realme", "oneplus", "mi", "vivo"}:
+    if brand not in SCRAPE_BRANDS:
         brand = "all"
     started = start_job("catalog", brand=brand, model=model)
     if request.headers.get("Accept") == "application/json":
@@ -497,7 +504,7 @@ def hosted_read_only_response() -> Any:
 def update_job_progress(line: str, output: str) -> None:
     progress_patch: dict[str, Any] = {}
     discovered = re.search(
-        r"Discovered\s+(?P<brand>Apple|Samsung|OPPO|realme|OnePlus|Mi|vivo)\s+(?P<model>.+?)\s+\((?:(?P<rows>\d+)\s+rows,\s+)?(?P<count>\d+)/(?P<total>[^)]+)\)",
+        r"Discovered\s+(?P<brand>Apple|Asus|Google|Honor|Infinix|Nothing|Nokia|OPPO|POCO|Samsung|Xiaomi|realme|OnePlus|Mi|vivo|iQOO|Motorola|Cashify)\s+(?P<model>.+?)\s+\((?:(?P<rows>\d+)\s+rows,\s+)?(?P<count>\d+)/(?P<total>[^)]+)\)",
         line,
     )
     if discovered:

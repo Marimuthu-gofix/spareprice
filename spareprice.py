@@ -46,13 +46,16 @@ REALME_MOBILE_SERIES = [
     "X Series",
     "U Series",
 ]
-DISCOVERY_BRANDS = ["apple", "samsung", "oppo", "realme", "oneplus", "mi", "vivo"]
+DISCOVERY_BRANDS = ["apple", "samsung", "oppo", "realme", "oneplus", "mi", "vivo", "iqoo", "motorola", "cashify"]
 ONEPLUS_SUPPORT_URL = "https://service.oneplus.com/in/spare-parts-price#/"
 ONEPLUS_API_BASE = "https://ind-sow-cms.oneplus.com/oppo-api"
 MI_SUPPORT_URL = "https://www.mi.com/in/support/spare-part-prices/model?category=Mobile"
 MI_API_BASE = "https://in-go.buy.mi.com/in/serviceplus/api/fos/public/v1/mi-store"
 MI_API_AUTH = "Basic bWlzdG9yZS1zZXJ2aWNlcGx1cy1pbnRlZ3JhdGlvbjp4aWFvbWlAQURNSU4="
 VIVO_SUPPORT_URL = "https://www.vivo.com/in/support/accessory"
+IQOO_SUPPORT_URL = "https://www.iqoo.com/in/support/accessory"
+MOTOROLA_SUPPORT_URL = "https://en-in.support.motorola.com/app/answers/detail/a_id/133816"
+CASHIFY_REPAIR_URL = "https://www.cashify.in/repair"
 
 
 @dataclass(frozen=True)
@@ -272,10 +275,11 @@ async def discover_all(
     oppo_series: str | None,
     realme_series: str | None,
     model_filter: str | None = None,
+    db_path: Path | None = None,
 ) -> int:
     from playwright.async_api import async_playwright
 
-    conn = connect_db(default_db_path("price_history.sqlite3"))
+    conn = connect_db(db_path or default_db_path("price_history.sqlite3"))
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True, args=browser_launch_args())
         context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
@@ -293,6 +297,12 @@ async def discover_all(
             await discover_mi(context, conn, delay_seconds, max_models, model_filter)
         if brand in {"all", "vivo"}:
             await discover_vivo(context, conn, delay_seconds, max_models, model_filter)
+        if brand in {"all", "iqoo"}:
+            await discover_iqoo(context, conn, delay_seconds, max_models, model_filter)
+        if brand in {"all", "motorola"}:
+            await discover_motorola(context, conn, delay_seconds, max_models, model_filter)
+        if brand in {"all", "cashify"}:
+            await discover_cashify(context, conn, delay_seconds, max_models, model_filter)
         await context.close()
         await browser.close()
     conn.close()
@@ -759,6 +769,188 @@ async def discover_vivo(
         await page.close()
 
 
+async def discover_iqoo(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    # FRAGILE SITE ASSUMPTION: iQOO currently exposes model IDs in
+    # .select-model-item and loads prices after clicking a model in its picker.
+    page = await context.new_page()
+    page.set_default_timeout(30000)
+    count = 0
+    try:
+        await goto_catalog_page(page, IQOO_SUPPORT_URL)
+        models = await page.locator(".select-model-item").evaluate_all(
+            """
+            items => items.map(item => ({
+              id: item.getAttribute('data-id'),
+              name: item.innerText.trim()
+            })).filter(item => item.id && item.name)
+            """
+        )
+        models = [item for item in models if model_matches_filter(str(item.get("name") or ""), model_filter)]
+        LOGGER.info("iQOO mobile models found: %s", len(models))
+        for item in models:
+            if max_models is not None and count >= max_models:
+                return
+            model_name = str(item.get("name") or "").strip()
+            model_id = str(item.get("id") or "").strip()
+            try:
+                await page.locator("#boxSelectModel").click()
+                model = page.locator(f'.select-model-item[data-id="{css_escape(model_id)}"]').first
+                async with page.expect_response(lambda response: "queryPriceByProductId" in response.url) as response_info:
+                    await model.click()
+                payload = await (await response_info.value).json()
+                rows = vivo_price_rows(payload)
+                saved = save_structured_price_rows(conn, "iQOO", model_name, IQOO_SUPPORT_URL, rows)
+                if not saved:
+                    raise ValueError("No iQOO spare-part price rows returned")
+                count += 1
+                LOGGER.info("Discovered iQOO %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+                await asyncio.sleep(delay_seconds)
+            except Exception as exc:
+                LOGGER.exception("iQOO model discovery failed: %s", model_name)
+                save_catalog_error(conn, "iQOO", model_name, IQOO_SUPPORT_URL, f"{type(exc).__name__}: {exc}")
+    except Exception:
+        LOGGER.exception("iQOO catalog discovery failed")
+    finally:
+        await page.close()
+
+
+async def discover_motorola(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    # FRAGILE SITE ASSUMPTION: Motorola's India page currently renders each
+    # model as an XT code heading, followed by "Part: price" text lines.
+    page = await context.new_page()
+    page.set_default_timeout(30000)
+    try:
+        await goto_catalog_page(page, MOTOROLA_SUPPORT_URL)
+        catalog = motorola_price_rows(await page.locator("body").inner_text())
+        models = [model for model in catalog if model_matches_filter(model, model_filter)]
+        LOGGER.info("Motorola mobile models found: %s", len(models))
+        for count, model_name in enumerate(models, start=1):
+            if max_models is not None and count > max_models:
+                return
+            saved = save_structured_price_rows(conn, "Motorola", model_name, MOTOROLA_SUPPORT_URL, catalog[model_name])
+            if not saved:
+                save_catalog_error(conn, "Motorola", model_name, MOTOROLA_SUPPORT_URL, "No Motorola spare-part price rows found")
+                continue
+            LOGGER.info("Discovered Motorola %s (%s rows, %s/%s)", model_name, saved, count, max_models or "all")
+            if count < len(models):
+                await asyncio.sleep(delay_seconds)
+    except Exception:
+        LOGGER.exception("Motorola catalog discovery failed")
+    finally:
+        await page.close()
+
+
+async def discover_cashify(
+    context: Any,
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    # FRAGILE SITE ASSUMPTION: Cashify currently exposes repair brand/model
+    # pages as /repair/<brand>/<model>, then shows service prices after a colour
+    # card is selected. The first available colour is used as the reference.
+    page = await context.new_page()
+    page.set_default_timeout(45000)
+    count = 0
+    try:
+        await goto_catalog_page(page, CASHIFY_REPAIR_URL)
+        brand_urls = await page.locator('a[href*="/repair/"]').evaluate_all(
+            r"""
+            anchors => [...new Set(anchors.map(anchor => anchor.href))]
+              .filter(href => /^https:\/\/www\.cashify\.in\/repair\/[^/?#]+\/?$/.test(href))
+            """
+        )
+        if model_filter:
+            requested = model_filter.lower()
+            matching_brands = [
+                url for url in brand_urls if cashify_brand_name(str(url)).lower() in requested
+            ]
+            if matching_brands:
+                brand_urls = matching_brands
+        LOGGER.info("Cashify repair brands found: %s", len(brand_urls))
+        for brand_url in brand_urls:
+            cashify_brand = cashify_brand_name(str(brand_url))
+            exact_brand_filter = bool(model_filter and model_filter.strip().lower() == cashify_brand.lower())
+            await goto_catalog_page(page, str(brand_url))
+            await load_all_cashify_model_cards(page)
+            model_names = await page.locator('.cursor-pointer img[src*="/product/"][alt]').evaluate_all(
+                r"""
+                images => [...new Set(images.map(image => image.alt.trim()).filter(Boolean))]
+                """
+            )
+            LOGGER.info("Cashify %s mobile models found: %s", cashify_brand, len(model_names))
+            for raw_model_name in model_names:
+                model_name = normalize_space(str(raw_model_name or ""))
+                if not model_name or (not exact_brand_filter and not model_matches_filter(model_name, model_filter)):
+                    continue
+                if max_models is not None and count >= max_models:
+                    return
+                try:
+                    await goto_catalog_page(page, str(brand_url))
+                    await load_all_cashify_model_cards(page)
+                    card = page.locator(
+                        f'.cursor-pointer img[src*="/product/"][alt="{css_escape(model_name)}"]'
+                    ).first
+                    if not await card.count():
+                        raise ValueError("Cashify model card was not found after loading the brand page")
+                    await card.click()
+                    await page.wait_for_url("**/repair/user/order/quote?**", timeout=15000)
+                    await page.get_by_role("heading", name="Pick Your Repair Service", exact=True).wait_for(state="visible")
+                    rows = [
+                        {**row, "part": f"Cashify - {row['part']}"}
+                        for row in cashify_price_rows(await page.locator("body").inner_text())
+                    ]
+                    saved = save_structured_price_rows(conn, cashify_brand, model_name, page.url, rows)
+                    if not saved:
+                        LOGGER.info("Cashify has no published repair-service prices for %s", model_name)
+                        continue
+                    count += 1
+                    LOGGER.info("Discovered Cashify %s %s (%s rows, %s/%s)", cashify_brand, model_name, saved, count, max_models or "all")
+                    await asyncio.sleep(delay_seconds)
+                except Exception as exc:
+                    LOGGER.exception("Cashify model discovery failed: %s", model_name)
+                    save_catalog_error(conn, cashify_brand, f"Cashify {model_name}", str(brand_url), f"{type(exc).__name__}: {exc}")
+    except Exception:
+        LOGGER.exception("Cashify catalog discovery failed")
+    finally:
+        await page.close()
+
+
+async def load_all_cashify_model_cards(page: Any) -> None:
+    """Scroll Cashify's model grid until its lazy-loaded repair links settle."""
+    # FRAGILE SITE ASSUMPTION: Cashify currently appends more model cards while
+    # the page scrolls. Without this, only the initially rendered cards are read.
+    selector = 'a[href*="/repair/"]'
+    stable_rounds = 0
+    previous_count = -1
+    for _ in range(20):
+        current_count = await page.locator(selector).count()
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(700)
+        next_count = await page.locator(selector).count()
+        if next_count == current_count == previous_count:
+            stable_rounds += 1
+            if stable_rounds >= 2:
+                break
+        else:
+            stable_rounds = 0
+        previous_count = next_count
+    await page.evaluate("window.scrollTo(0, 0)")
+
+
 async def goto_catalog_page(page: Any, url: str) -> None:
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -1046,6 +1238,88 @@ def vivo_price_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def motorola_price_rows(text: str) -> dict[str, list[dict[str, Any]]]:
+    rows_by_model: dict[str, list[dict[str, Any]]] = {}
+    model_name: str | None = None
+    # The source has a model heading such as "XT2503-2 Motorola edge 60"
+    # followed by spare-part lines such as "Battery: 1960".
+    model_pattern = re.compile(r"^(XT[\w-]+\s+.+)$", re.IGNORECASE)
+    part_pattern = re.compile(r"^(?P<part>[^:]{2,}):\s*(?:₹|Rs\.?\s*|INR\s*)?(?P<price>\d[\d,]*(?:\.\d{1,2})?)\*?$")
+    for raw_line in text.splitlines():
+        line = normalize_space(raw_line)
+        model_match = model_pattern.match(line)
+        if model_match:
+            model_name = model_match.group(1)
+            rows_by_model.setdefault(model_name, [])
+            continue
+        if not model_name:
+            continue
+        part_match = part_pattern.match(line)
+        if not part_match:
+            continue
+        part = part_match.group("part")
+        if is_non_spare_part(part):
+            continue
+        price_value = coerce_price_value(part_match.group("price"))
+        if price_value is not None:
+            rows_by_model[model_name].append(
+                {"part": part, "price_value": price_value, "currency": "INR"}
+            )
+    return {model: rows for model, rows in rows_by_model.items() if rows}
+
+
+def cashify_price_rows(text: str) -> list[dict[str, Any]]:
+    lines = [normalize_space(line) for line in text.splitlines() if normalize_space(line)]
+    try:
+        start = lines.index("Pick Your Repair Service") + 1
+    except ValueError:
+        return []
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index] == "Looking for other repair service?"),
+        len(lines),
+    )
+    rows: list[dict[str, Any]] = []
+    seen_parts: set[str] = set()
+    for index in range(start, end - 1):
+        part = lines[index]
+        if not part or find_currency_price_match(part) or is_non_spare_part(part):
+            continue
+        price_match = re.fullmatch(r"(?:₹|Rs\.?\s*|INR\s*)(\d[\d,]*(?:\.\d{1,2})?)", lines[index + 1])
+        if not price_match:
+            continue
+        normalized_part = part.lower()
+        if normalized_part in seen_parts:
+            continue
+        price_value = coerce_price_value(price_match.group(1))
+        if price_value is not None:
+            rows.append({"part": part, "price_value": price_value, "currency": "INR"})
+            seen_parts.add(normalized_part)
+    return rows
+
+
+def cashify_brand_name(url: str) -> str:
+    slug = url.rstrip("/").split("/")[-1].lower()
+    labels = {
+        "apple": "Apple",
+        "asus": "Asus",
+        "google": "Google",
+        "honor": "Honor",
+        "infinix": "Infinix",
+        "iqoo": "iQOO",
+        "motorola": "Motorola",
+        "nokia": "Nokia",
+        "nothing": "Nothing",
+        "oneplus": "OnePlus",
+        "oppo": "OPPO",
+        "poco": "POCO",
+        "realme": "realme",
+        "samsung": "Samsung",
+        "vivo": "vivo",
+        "xiaomi": "Xiaomi",
+    }
+    return labels.get(slug, slug.replace("-", " ").title())
+
+
 def coerce_price_value(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -1313,6 +1587,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--delay", type=float, default=3.0)
     discover_parser.add_argument("--max-models", type=int)
     discover_parser.add_argument("--model", help="Only crawl models containing this text.")
+    discover_parser.add_argument("--db", default="price_history.sqlite3", type=Path)
     discover_parser.add_argument(
         "--samsung-series",
         choices=["galaxy-z", "galaxy-s", "galaxy-a", "galaxy-m", "galaxy-f", "galaxy-tab"],
@@ -1364,6 +1639,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.oppo_series,
                 args.realme_series,
                 args.model,
+                args.db,
             )
         )
     raise AssertionError(f"Unhandled command: {args.command}")

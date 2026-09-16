@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+brand_smoke_*.sqlite3
 backups/
