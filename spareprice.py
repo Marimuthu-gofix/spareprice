@@ -885,14 +885,25 @@ async def discover_cashify(
             cashify_brand = cashify_brand_name(str(brand_url))
             exact_brand_filter = bool(model_filter and model_filter.strip().lower() == cashify_brand.lower())
             await goto_catalog_page(page, str(brand_url))
-            await load_all_cashify_model_cards(page)
-            model_names = await page.locator('.cursor-pointer img[src*="/product/"][alt]').evaluate_all(
-                r"""
-                images => [...new Set(images.map(image => image.alt.trim()).filter(Boolean))]
-                """
+            # FRAGILE SITE ASSUMPTION: the brand page first shows only a
+            # "popular" subset of models. The rest sit behind series tabs
+            # ("Galaxy Fold Series", "Galaxy S Series", ...) that swap the grid,
+            # so every tab is visited and each model remembers its tab.
+            series_labels = await cashify_series_labels(page)
+            model_series: dict[str, str | None] = {}
+            for series_label in [None, *series_labels]:
+                if series_label is not None:
+                    await goto_catalog_page(page, str(brand_url))
+                    if not await select_cashify_series(page, series_label):
+                        LOGGER.warning("Cashify %s series tab was not found: %s", cashify_brand, series_label)
+                        continue
+                await load_all_cashify_model_cards(page)
+                for raw_model_name in await cashify_model_card_names(page):
+                    model_series.setdefault(raw_model_name, series_label)
+            LOGGER.info(
+                "Cashify %s mobile models found: %s across %s series", cashify_brand, len(model_series), len(series_labels)
             )
-            LOGGER.info("Cashify %s mobile models found: %s", cashify_brand, len(model_names))
-            for raw_model_name in model_names:
+            for raw_model_name, series_label in model_series.items():
                 model_name = normalize_space(str(raw_model_name or ""))
                 if not model_name or (not exact_brand_filter and not model_matches_filter(model_name, model_filter)):
                     continue
@@ -900,6 +911,8 @@ async def discover_cashify(
                     return
                 try:
                     await goto_catalog_page(page, str(brand_url))
+                    if series_label is not None and not await select_cashify_series(page, series_label):
+                        raise ValueError(f"Cashify series tab was not found: {series_label}")
                     await load_all_cashify_model_cards(page)
                     card = page.locator(
                         f'.cursor-pointer img[src*="/product/"][alt="{css_escape(model_name)}"]'
@@ -927,6 +940,51 @@ async def discover_cashify(
         LOGGER.exception("Cashify catalog discovery failed")
     finally:
         await page.close()
+
+
+async def cashify_model_card_names(page: Any) -> list[str]:
+    names = await page.locator('.cursor-pointer img[src*="/product/"][alt]').evaluate_all(
+        r"""
+        images => [...new Set(images.map(image => image.alt.trim()).filter(Boolean))]
+        """
+    )
+    return [normalize_space(str(name)) for name in names if normalize_space(str(name))]
+
+
+async def cashify_series_labels(page: Any) -> list[str]:
+    """Visible series tabs on a Cashify brand page, e.g. "Galaxy Fold Series"."""
+    # FRAGILE SITE ASSUMPTION: series tabs are <li> items whose text ends in
+    # "Series"; hidden laptop-series menu entries are anchors, not list items.
+    labels = await page.evaluate(
+        r"""
+        () => [...new Set(
+          [...document.querySelectorAll("li")]
+            .filter(item => /series$/i.test(item.textContent.trim()) && item.getBoundingClientRect().height > 0)
+            .map(item => item.textContent.trim())
+        )]
+        """
+    )
+    return [normalize_space(str(label)) for label in labels if label]
+
+
+async def select_cashify_series(page: Any, label: str) -> bool:
+    """Click a series tab so the model grid switches to that series."""
+    clicked = await page.evaluate(
+        r"""
+        label => {
+          const item = [...document.querySelectorAll("li")].find(
+            item => item.textContent.trim() === label && item.getBoundingClientRect().height > 0
+          );
+          if (!item) return false;
+          (item.querySelector(".cursor-pointer") || item).click();
+          return true;
+        }
+        """,
+        label,
+    )
+    if clicked:
+        await page.wait_for_timeout(1500)
+    return bool(clicked)
 
 
 async def load_all_cashify_model_cards(page: Any) -> None:

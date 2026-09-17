@@ -205,12 +205,12 @@
               </tr>
             </thead>
             <tbody>
-              {% for row, group_start, group_size, group_id in latest %}
+              {% for row, group_start, group_size, group_id, group_sources, group_label in latest %}
                 {% if group_start and group_size > 1 %}
                   <tr class="group-header" data-group="{{ group_id }}" tabindex="0" role="button" aria-expanded="false">
                     <td class="expand-cell">{{ icon('chevron') }}</td>
-                    <td colspan="2"><span class="badge badge-brand">{{ row.brand }}</span> <strong class="group-model">{{ row.model }}</strong></td>
-                    <td colspan="4" class="group-meta">{{ group_size }} parts</td>
+                    <td colspan="2"><span class="badge badge-brand">{{ row.brand }}</span> <strong class="group-model">{{ group_label }}</strong></td>
+                    <td colspan="4" class="group-meta">{{ group_size }} parts{% if group_sources > 1 %} &middot; <span class="compare-flag">{{ group_sources }} sources</span>{% endif %}</td>
                   </tr>
                 {% endif %}
                 <tr class="row-toggle {{ 'group-child' if group_size > 1 else '' }}" data-group="{{ group_id if group_size > 1 else '' }}" data-drawer-title="{{ row.brand }} {{ row.model }} &middot; {{ row.part }}" {{ 'hidden' if group_size > 1 }} tabindex="0">
@@ -218,18 +218,42 @@
                   <td data-label="Brand" class="{{ 'grouped-cell' if group_size > 1 else '' }}"><span class="badge badge-brand">{{ row.brand }}</span></td>
                   <td data-label="Model" class="{{ 'grouped-cell' if group_size > 1 else '' }}">{{ row.model }}</td>
                   <td data-label="Spare Part">{{ row.part }}</td>
-                  <td data-label="Latest Price" class="price">{{ row.price_value|money(row.currency) }}</td>
+                  <td data-label="Latest Price" class="price">
+                    {% if row.competitors %}
+                      <div class="price-stack">
+                        <div class="price-line"><span class="src-tag">{{ row.source }}</span>{{ row.price_value|money(row.currency) }}</div>
+                        {% for other in row.competitors %}
+                          <div class="price-line price-other" title="{{ other.part }} &middot; checked {{ other.date|localdate }}"><span class="src-tag src-tag-alt">{{ other.source }}</span>{{ other.price_value|money(other.currency) }}</div>
+                        {% endfor %}
+                      </div>
+                    {% else %}
+                      {{ row.price_value|money(row.currency) }}
+                    {% endif %}
+                  </td>
                   <td data-label="Last Checked">{{ row.date|localdate }}</td>
-                  <td data-label="Source"><a href="{{ row.url }}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Open&nbsp;&#8599;</a></td>
+                  <td data-label="Source"><a href="{{ row.url }}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">{{ row.source }}&nbsp;&#8599;</a></td>
                 </tr>
                 <template class="row-detail-template">
                   <div class="detail-grid">
                     <div><span>Latest price</span><strong>{{ row.price_value|money(row.currency) }}</strong></div>
+                    <div><span>Source</span><strong>{{ row.source }}</strong></div>
                     <div><span>Currency</span><strong>{{ row.currency or "-" }}</strong></div>
                     <div><span>Recorded text</span><strong>{{ row.price or "-" }}</strong></div>
                     <div><span>Last checked</span><strong>{{ row.date|localdate }}</strong></div>
                     <div><span>Source URL</span><strong class="truncate"><a href="{{ row.url }}" target="_blank" rel="noreferrer">{{ row.url }}</a></strong></div>
                   </div>
+                  {% if row.competitors %}
+                    <h4 class="detail-subheading">Other sources for {{ row.category }}</h4>
+                    <div class="detail-grid">
+                      {% for other in row.competitors %}
+                        <div>
+                          <span>{{ other.source }} &middot; {{ other.part }}</span>
+                          <strong>{{ other.price_value|money(other.currency) }}</strong>
+                          <small>Checked {{ other.date|localdate }} &middot; <a href="{{ other.url }}" target="_blank" rel="noreferrer">Open&nbsp;&#8599;</a></small>
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
                 </template>
               {% else %}
                 <tr class="empty-row">

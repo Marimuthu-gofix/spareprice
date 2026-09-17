@@ -12,7 +12,7 @@ import sys
 import threading
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -157,14 +157,173 @@ def localdate_filter(value: str | None) -> str:
 PER_PAGE_OPTIONS = [25, 50, 100, 250]
 SORT_KEYS: dict[str, Any] = {
     "brand": lambda r: (r["brand"] or "").lower(),
-    "model": lambda r: (r["model"] or "").lower(),
+    "model": lambda r: r["model_key"],
     "part": lambda r: (r["part"] or "").lower(),
     "price": lambda r: (r["price_value"] if r["price_value"] is not None else -1),
     "date": lambda r: r["date"] or "",
 }
 
 
-def group_by_model(rows: list[sqlite3.Row]) -> list[tuple[sqlite3.Row, bool, int, str]]:
+COMPETITOR_BRAND_ALIASES = {"xiaomi": "mi", "poco": "mi"}
+MODEL_PREFIX_RE = re.compile(r"^(?:xt\d{4}(?:-\d+)?\s+)?(?:(?:apple|samsung|xiaomi|oppo|realme|oneplus|vivo|iqoo|motorola|moto)\s+)*")
+IPHONE_SE_RE = re.compile(r"iphone se\s*\(?(\d)(?:st|nd|rd|th) generation\)?")
+IPHONE_SE_YEARS = {"2016": "1", "2020": "2", "2022": "3"}
+LOOSE_SUFFIX_RE = re.compile(r"\s*\(?5g\)?$")
+
+
+def clean_text(value: str | None) -> str:
+    """Lowercase, replace non-breaking spaces (Apple's site uses them inside
+    model names) and collapse runs of whitespace."""
+    return re.sub(r"\s+", " ", (value or "").replace("\u00a0", " ")).strip().lower()
+
+
+def brand_key(brand: str | None) -> str:
+    key = clean_text(brand)
+    return COMPETITOR_BRAND_ALIASES.get(key, key)
+
+
+def model_key(model: str | None, loose: bool = False) -> str:
+    """Canonical model name shared by every source: strips the brand prefix
+    Cashify adds ("Apple iPhone 14" -> "iphone 14"), Motorola's XT codes,
+    and folds iPhone SE year/generation spellings together. With loose=True
+    a trailing "5G" is dropped too, for sources that omit it."""
+    key = MODEL_PREFIX_RE.sub("", clean_text(model))
+    key = IPHONE_SE_RE.sub(lambda m: f"iphone se gen {m.group(1)}", key)
+    key = re.sub(
+        r"iphone se (2016|2020|2022)$",
+        lambda m: f"iphone se gen {IPHONE_SE_YEARS[m.group(1)]}",
+        key,
+    )
+    if key == "iphone se":
+        key = "iphone se gen 1"
+    # Samsung writes "Galaxy Z Fold7"; Cashify writes "Galaxy Z Fold 7".
+    key = re.sub(r"\b(fold|flip|note)\s+(?=\d)", r"\1", key)
+    if loose:
+        key = LOOSE_SUFFIX_RE.sub("", key)
+    return key
+
+
+def search_text(row: Any, *extra: str) -> str:
+    """Text a search needle is matched against: the raw fields plus the
+    canonical model name, so "iPhone SE (3rd generation)" also finds
+    Cashify's "Apple iPhone SE 2022"."""
+    parts = [row["brand"], row["model"], row["part"], row["price"] or "", model_key(row["model"]), *extra]
+    return clean_text(" ".join(str(part) for part in parts))
+
+
+def matches_search(row: Any, search: str, *extra: str) -> bool:
+    haystack = search_text(row, *extra)
+    needle = clean_text(search)
+    return needle in haystack or model_key(search) in haystack
+
+
+def price_source(row: Any) -> str:
+    """Name of the site a price was scraped from: the brand's own support
+    site, or Cashify (the third-party repair competitor)."""
+    part = row["part"] or ""
+    url = row["url"] or ""
+    if part.startswith("Cashify - ") or "cashify.in" in url:
+        return "Cashify"
+    return row["brand"] or "Official"
+
+
+def part_category(part: str | None) -> str | None:
+    """Fold the many vendor-specific spare-part names into a shared category so
+    the same repair can be compared across sources (e.g. Apple "Screen damage",
+    Mi "LCD Module - Display" and "Cashify - Screen" are all "Screen").
+    Returns None for accessories and parts no competitor sells."""
+    name = (part or "").lower()
+    if name.startswith("cashify - "):
+        name = name[len("cashify - "):]
+    name = name.replace("-", " ").replace("（", " (").replace("）", ")")
+
+    def has(*words: str) -> bool:
+        return any(word in name for word in words)
+
+    if has("cable", "adapter", "charger", "headset", "cleaning", "s pen", "sim tray", "component repair"):
+        return None
+    if "camera" in name:
+        return "Front Camera" if "front" in name else "Back Camera"
+    if has("proximity"):
+        return "Proximity Sensor"
+    if has("aux", "headphone", "earphone jack"):
+        return "Aux Jack"
+    if has("receiver", "earpiece"):
+        return "Receiver"
+    if has("speaker"):
+        return "Speaker"
+    if has("mic"):
+        return "Mic"
+    if has("charging", "usb port", "sub board", "pcb sb"):
+        return "Charging Jack"
+    if has("motherboard", "mainboard", "main board", "mother board", "pcb mb", "logic board"):
+        return "Motherboard"
+    if has("sub screen", "cover screen", "cover display", "outer screen", "outer display", "cli display", "secondary display"):
+        return "Cover Screen"
+    if has("screen", "display", "lcd", "lcm", "touch panel"):
+        return "Screen"
+    if has("back cover", "back glass", "battery cover", "backcover", "rear cover", "rear glass"):
+        return "Back Cover"
+    if has("battery"):
+        return "Battery"
+    return None
+
+
+def is_recent_enough(date_value: str | None, newest: str, window_hours: int = 36) -> bool:
+    """True when a check happened within `window_hours` of the newest check."""
+    try:
+        checked = datetime.fromisoformat((date_value or "").replace("Z", "+00:00"))
+        latest = datetime.fromisoformat(newest.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return (latest - checked) <= timedelta(hours=window_hours)
+
+
+def attach_competitor_prices(latest: list[dict[str, Any]]) -> None:
+    """For every latest price, list the latest prices for the same model and
+    part category scraped from a *different* source, so a row can show the
+    official and the Cashify price side by side."""
+    strict: defaultdict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    loose: defaultdict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in latest:
+        row["source"] = price_source(row)
+        row["brand_key"] = brand_key(row["brand"])
+        row["model_key"] = model_key(row["model"])
+        row["category"] = part_category(row["part"])
+        row["competitors"] = []
+        if row["category"]:
+            strict[(row["brand_key"], row["model_key"], row["category"])].append(row)
+            loose[(row["brand_key"], model_key(row["model"], loose=True), row["category"])].append(row)
+
+    def others(candidates: list[dict[str, Any]], row: dict[str, Any]) -> list[dict[str, Any]]:
+        seen: set[tuple[str, str]] = set()
+        found = []
+        for other in candidates:
+            tag = (other["source"], other["part"])
+            if other["source"] == row["source"] or tag in seen:
+                continue
+            seen.add(tag)
+            found.append(other)
+        # A source can carry the same repair under two part names (the old
+        # config.json shortlist saved Apple's battery as "Battery", discovery
+        # saves it as "Battery service"). Keep only the parts that source
+        # refreshed in its most recent check, so stale names drop out.
+        newest: dict[str, str] = {}
+        for other in found:
+            newest[other["source"]] = max(newest.get(other["source"], ""), other["date"] or "")
+        found = [other for other in found if is_recent_enough(other["date"], newest[other["source"]])]
+        return sorted(found, key=lambda r: (r["source"], r["part"]))
+
+    for row in latest:
+        if not row["category"]:
+            continue
+        found = others(strict[(row["brand_key"], row["model_key"], row["category"])], row)
+        if not found:
+            found = others(loose[(row["brand_key"], model_key(row["model"], loose=True), row["category"])], row)
+        row["competitors"] = found
+
+
+def group_by_model(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], bool, int, str, int, str]]:
     """Tag consecutive rows sharing (brand, model) so the template can collapse
     them into one accordion instead of repeating the brand/model on every
     spare-part row. Grouping only merges rows that are already adjacent in the
@@ -172,8 +331,8 @@ def group_by_model(rows: list[sqlite3.Row]) -> list[tuple[sqlite3.Row, bool, int
     annotation, not a re-sort, so other sort orders mostly yield groups of 1
     and render as plain rows.
     """
-    keys = [(row["brand"], row["model"]) for row in rows]
-    grouped: list[tuple[sqlite3.Row, bool, int, str]] = []
+    keys = [(row["brand_key"], row["model_key"]) for row in rows]
+    grouped: list[tuple[dict[str, Any], bool, int, str, int, str]] = []
     group_index = -1
     i = 0
     n = len(rows)
@@ -184,8 +343,13 @@ def group_by_model(rows: list[sqlite3.Row]) -> list[tuple[sqlite3.Row, bool, int
         group_index += 1
         group_id = f"g{group_index}"
         size = j - i
+        sources = len({rows[k]["source"] for k in range(i, j)})
+        # Title the accordion with the brand's own model name when we have it;
+        # Cashify prefixes the brand ("Apple iPhone 14") and spells some models
+        # differently.
+        label = next((rows[k]["model"] for k in range(i, j) if rows[k]["source"] != "Cashify"), rows[i]["model"])
         for k in range(i, j):
-            grouped.append((rows[k], k == i, size, group_id))
+            grouped.append((rows[k], k == i, size, group_id, sources, label))
         i = j
     return grouped
 
@@ -218,30 +382,29 @@ def load_dashboard(
             latest_by_key[key] = row
 
     brands = sorted(set(SUPPORTED_BRANDS) | {row["brand"] for row in rows} | {row["brand"] for row in latest_by_key.values()})
-    latest = sorted(latest_by_key.values(), key=lambda r: (r["brand"], r["model"], r["part"]))
+    latest = [dict(row) for row in latest_by_key.values()]
+    attach_competitor_prices(latest)
+    latest.sort(key=lambda r: (r["brand_key"], r["model_key"], r["source"] == "Cashify", r["brand"], r["part"]))
     if selected_brands_lower:
         latest = [row for row in latest if row["brand"].lower() in selected_brands_lower]
         rows = [row for row in rows if row["brand"].lower() in selected_brands_lower]
     if status in {"ok", "error"}:
         rows = [row for row in rows if row["status"] == status]
     if search:
-        needle = search.lower()
-        latest = [
-            row
-            for row in latest
-            if needle in " ".join([row["brand"], row["model"], row["part"], row["price"] or ""]).lower()
-        ]
-        rows = [
-            row
-            for row in rows
-            if needle
-            in " ".join([row["brand"], row["model"], row["part"], row["price"] or "", row["status"]]).lower()
-        ]
+        latest = [row for row in latest if matches_search(row, search)]
+        rows = [row for row in rows if matches_search(row, search, row["status"])]
 
     suggestions = sorted({f"{row['model']} - {row['part']}" for row in latest_by_key.values()})[:500]
 
     sort_key = SORT_KEYS.get(sort, SORT_KEYS["date"])
     latest.sort(key=sort_key, reverse=(sort_dir != "asc"))
+    if sort not in SORT_KEYS or sort == "date":
+        # Keep every model's rows together (official + Cashify were scraped at
+        # different times) while ordering models by their most recent check.
+        first_seen: dict[tuple[str, str], int] = {}
+        for row in latest:
+            first_seen.setdefault((row["brand_key"], row["model_key"]), len(first_seen))
+        latest.sort(key=lambda r: first_seen[(r["brand_key"], r["model_key"])])
 
     latest_total = len(latest)
     per_page = per_page if per_page in PER_PAGE_OPTIONS else 100
@@ -320,7 +483,7 @@ def load_dashboard(
         "stats": {
             "tracked": len(latest),
             "brands": len({row["brand"] for row in latest}),
-            "models": len({(row["brand"], row["model"]) for row in latest}),
+            "models": len({(row["brand_key"], row["model_key"]) for row in latest}),
             "checks": len(rows),
             "errors": len(error_rows),
             "total_value": total_value,
