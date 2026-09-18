@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from functools import lru_cache
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -171,12 +172,14 @@ IPHONE_SE_YEARS = {"2016": "1", "2020": "2", "2022": "3"}
 LOOSE_SUFFIX_RE = re.compile(r"\s*\(?5g\)?$")
 
 
+@lru_cache(maxsize=None)
 def clean_text(value: str | None) -> str:
     """Lowercase, replace non-breaking spaces (Apple's site uses them inside
     model names) and collapse runs of whitespace."""
     return re.sub(r"\s+", " ", (value or "").replace("\u00a0", " ")).strip().lower()
 
 
+@lru_cache(maxsize=None)
 def clean_label(value: str | None) -> str:
     """Display text with non-breaking spaces and doubled whitespace removed."""
     return re.sub(r"\s+", " ", (value or "").replace("\u00a0", " ")).strip()
@@ -187,6 +190,7 @@ def brand_key(brand: str | None) -> str:
     return COMPETITOR_BRAND_ALIASES.get(key, key)
 
 
+@lru_cache(maxsize=None)
 def model_key(model: str | None, loose: bool = False) -> str:
     """Canonical model name shared by every source: strips the brand prefix
     Cashify adds ("Apple iPhone 14" -> "iphone 14"), Motorola's XT codes,
@@ -208,12 +212,19 @@ def model_key(model: str | None, loose: bool = False) -> str:
     return key
 
 
+@lru_cache(maxsize=None)
+def _search_text(brand: str, model: str, part: str, price: str, extra: tuple[str, ...]) -> str:
+    return clean_text(" ".join([brand, model, part, price, model_key(model), *extra]))
+
+
 def search_text(row: Any, *extra: str) -> str:
     """Text a search needle is matched against: the raw fields plus the
     canonical model name, so "iPhone SE (3rd generation)" also finds
     Cashify's "Apple iPhone SE 2022"."""
-    parts = [row["brand"], row["model"], row["part"], row["price"] or "", model_key(row["model"]), *extra]
-    return clean_text(" ".join(str(part) for part in parts))
+    return _search_text(
+        str(row["brand"] or ""), str(row["model"] or ""), str(row["part"] or ""), str(row["price"] or ""),
+        tuple(str(item) for item in extra),
+    )
 
 
 SEARCH_BRAND_WORDS = {
@@ -246,6 +257,7 @@ def price_source(row: Any) -> str:
     return row["brand"] or "Official"
 
 
+@lru_cache(maxsize=None)
 def part_category(part: str | None) -> str | None:
     """Fold the many vendor-specific spare-part names into a shared category so
     the same repair can be compared across sources (e.g. Apple "Screen damage",
@@ -373,6 +385,61 @@ def group_by_model(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], boo
     return grouped
 
 
+_PRICE_DATA_LOCK = threading.Lock()
+_PRICE_DATA: dict[str, Any] = {"stamp": None}
+
+
+def load_price_data() -> dict[str, Any]:
+    """Everything that depends only on the database contents: all rows, the
+    latest price per part with its competitor prices, and the picker lists.
+
+    Building this is the expensive part of a page load (seconds of CPU on a
+    small hosted instance), so it is kept until the database file changes.
+    Callers must treat the returned lists and rows as read-only."""
+    path = db_path()
+    try:
+        info = path.stat()
+        stamp = (str(path), info.st_mtime_ns, info.st_size)
+    except OSError:
+        stamp = (str(path), 0, 0)
+    with _PRICE_DATA_LOCK:
+        if _PRICE_DATA.get("stamp") == stamp:
+            return _PRICE_DATA
+        conn = connect()
+        rows = conn.execute(
+            """
+            SELECT date, brand, model, part, price, price_value, currency, status, error, url
+            FROM price_history
+            ORDER BY date DESC
+            """
+        ).fetchall()
+        conn.close()
+
+        latest_by_key: dict[tuple[str, str, str], sqlite3.Row] = {}
+        for row in reversed(rows):
+            if row["status"] == "ok":
+                latest_by_key[(row["brand"], row["model"], row["part"])] = row
+
+        latest = [dict(row) for row in latest_by_key.values()]
+        attach_competitor_prices(latest)
+        latest.sort(key=lambda r: (r["brand_key"], r["model_key"], r["source"] == "Cashify", r["brand"], r["part"]))
+        # One name per phone for the export picker; rows are ordered
+        # official-first, so setdefault keeps the brand's own spelling.
+        model_names: dict[tuple[str, str], str] = {}
+        for row in latest:
+            model_names.setdefault((row["brand_key"], row["model_key"]), clean_label(row["model"]))
+
+        _PRICE_DATA.update(
+            stamp=stamp,
+            rows=rows,
+            latest=latest,
+            brands=sorted(set(SUPPORTED_BRANDS) | {row["brand"] for row in rows}),
+            model_options=sorted(set(model_names.values()), key=str.lower),
+            suggestions=sorted({f"{row['model']} - {row['part']}" for row in latest})[:500],
+        )
+        return _PRICE_DATA
+
+
 def load_dashboard(
     search: str = "",
     selected_brands: list[str] | None = None,
@@ -385,32 +452,12 @@ def load_dashboard(
 ) -> dict[str, Any]:
     selected_brands = selected_brands or []
     selected_brands_lower = {b.lower() for b in selected_brands}
-    conn = connect()
-    rows = conn.execute(
-        """
-        SELECT date, brand, model, part, price, price_value, currency, status, error, url
-        FROM price_history
-        ORDER BY date DESC
-        """
-    ).fetchall()
-    conn.close()
-
-    latest_by_key: dict[tuple[str, str, str], sqlite3.Row] = {}
-    for row in reversed(rows):
-        key = (row["brand"], row["model"], row["part"])
-        if row["status"] == "ok":
-            latest_by_key[key] = row
-
-    brands = sorted(set(SUPPORTED_BRANDS) | {row["brand"] for row in rows} | {row["brand"] for row in latest_by_key.values()})
-    latest = [dict(row) for row in latest_by_key.values()]
-    attach_competitor_prices(latest)
-    latest.sort(key=lambda r: (r["brand_key"], r["model_key"], r["source"] == "Cashify", r["brand"], r["part"]))
-    # One name per phone for the export picker; rows are ordered official-first,
-    # so setdefault keeps the brand's own spelling over Cashify's.
-    model_names: dict[tuple[str, str], str] = {}
-    for row in latest:
-        model_names.setdefault((row["brand_key"], row["model_key"]), clean_label(row["model"]))
-    model_options = sorted(set(model_names.values()), key=str.lower)
+    cached = load_price_data()
+    rows = cached["rows"]
+    all_latest = cached["latest"]
+    latest = list(all_latest)  # sorted and filtered per request; never mutate the cached list
+    brands = cached["brands"]
+    model_options = cached["model_options"]
     if selected_brands_lower:
         latest = [row for row in latest if row["brand"].lower() in selected_brands_lower]
         rows = [row for row in rows if row["brand"].lower() in selected_brands_lower]
@@ -420,7 +467,7 @@ def load_dashboard(
         latest = [row for row in latest if matches_search(row, search)]
         rows = [row for row in rows if matches_search(row, search, row["status"])]
 
-    suggestions = sorted({f"{row['model']} - {row['part']}" for row in latest_by_key.values()})[:500]
+    suggestions = cached["suggestions"]
 
     sort_key = SORT_KEYS.get(sort, SORT_KEYS["date"])
     latest.sort(key=sort_key, reverse=(sort_dir != "asc"))
@@ -473,7 +520,7 @@ def load_dashboard(
     priced = [row["price_value"] for row in latest if row["price_value"] is not None]
     average_value = (sum(priced) / len(priced)) if priced else None
     today_local = datetime.now(DISPLAY_TIMEZONE).date()
-    updated_today = sum(1 for row in latest_by_key.values() if _is_local_date(row["date"], today_local))
+    updated_today = sum(1 for row in all_latest if _is_local_date(row["date"], today_local))
     chart_note = f"Showing {len(chart_series)} chart series"
     if len(latest) > len(chart_series):
         chart_note += f" from {len(latest)} matching prices. Search a model or spare part for a focused chart."
@@ -592,6 +639,16 @@ def build_active_filters(filters: dict[str, Any]) -> list[dict[str, str]]:
     return active
 
 
+def warm_price_data() -> None:
+    try:
+        load_price_data()
+    except Exception:
+        app.logger.exception("Could not warm the price data cache")
+
+
+threading.Thread(target=warm_price_data, name="warm-price-data", daemon=True).start()
+
+
 @app.route("/")
 def index() -> str:
     filters = parse_filters()
@@ -641,6 +698,13 @@ def export_rows(scope: str, model: str = "") -> tuple[list[dict[str, Any]], str]
         chosen = [row for row in rows if matches_search(row, model)]
     label = re.sub(r"[^a-z0-9]+", "_", clean_label(model).lower()).strip("_") or "model"
     return chosen, label
+
+
+@app.get("/models.json")
+def model_options_json() -> Any:
+    """Model names for the export picker, fetched when the menu first opens so
+    the list is not embedded in every page."""
+    return jsonify(load_price_data()["model_options"])
 
 
 @app.get("/export.csv")

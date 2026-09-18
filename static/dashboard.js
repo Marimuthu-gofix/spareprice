@@ -393,3 +393,28 @@
       .replaceAll("'", "&#039;");
   }
 })();
+
+// The export picker's model list is large, so it is fetched the first time the
+// export menu opens instead of being embedded in every page.
+(function () {
+  const menu = document.querySelector("details.export-menu");
+  const list = document.getElementById("exportModelOptions");
+  if (!menu || !list || !list.dataset.source) return;
+  let loaded = false;
+  menu.addEventListener("toggle", async () => {
+    if (!menu.open || loaded) return;
+    loaded = true;
+    try {
+      const names = await (await fetch(list.dataset.source)).json();
+      const fragment = document.createDocumentFragment();
+      names.forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        fragment.appendChild(option);
+      });
+      list.appendChild(fragment);
+    } catch (error) {
+      loaded = false;
+    }
+  });
+})();

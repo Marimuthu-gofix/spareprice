@@ -47,11 +47,7 @@
               <input type="hidden" name="scope" value="model">
               <label for="exportModel"><strong>Particular model</strong></label>
               <input id="exportModel" name="model" list="exportModelOptions" placeholder="Type a model, e.g. Galaxy Z Fold5" autocomplete="off" required>
-              <datalist id="exportModelOptions">
-                {% for name in model_options %}
-                  <option value="{{ name }}"></option>
-                {% endfor %}
-              </datalist>
+              <datalist id="exportModelOptions" data-source="{{ url_for('model_options_json') }}"></datalist>
               <button type="submit">Export this model</button>
             </form>
           </div>
