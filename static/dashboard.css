@@ -1368,3 +1368,14 @@ a:hover {
     right: auto;
   }
 }
+
+/* Page links jump back to this section; keep its title clear of the sticky header. */
+#recent-checks {
+  scroll-margin-top: 120px;
+}
+
+@media (max-width: 820px) {
+  #recent-checks {
+    scroll-margin-top: 170px;
+  }
+}

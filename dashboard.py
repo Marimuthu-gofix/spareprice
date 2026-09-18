@@ -156,6 +156,8 @@ def localdate_filter(value: str | None) -> str:
 
 
 PER_PAGE_OPTIONS = [25, 50, 100, 250]
+HISTORY_PER_PAGE_OPTIONS = [10, 25, 50, 100]
+HISTORY_PER_PAGE_DEFAULT = 10
 SORT_KEYS: dict[str, Any] = {
     "brand": lambda r: (r["brand"] or "").lower(),
     "model": lambda r: r["model_key"],
@@ -385,6 +387,31 @@ def group_by_model(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], boo
     return grouped
 
 
+def page_info(total: int, page: int, per_page: int, window: int = 2) -> dict[str, Any]:
+    """Pagination numbers for a list of `total` items, with `page` clamped."""
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(max(page, 1), total_pages)
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "slice_start": start,
+        "slice_end": end,
+        "start": start + 1 if total else 0,
+        "end": end,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "prev_page": max(1, page - 1),
+        "next_page": min(total_pages, page + 1),
+        "page_numbers": sorted(
+            {p for p in range(page - window, page + window + 1) if 1 <= p <= total_pages} | {1, total_pages}
+        ),
+    }
+
+
 _PRICE_DATA_LOCK = threading.Lock()
 _PRICE_DATA: dict[str, Any] = {"stamp": None}
 
@@ -449,6 +476,8 @@ def load_dashboard(
     sort: str = "date",
     sort_dir: str = "desc",
     paginate: bool = True,
+    history_page: int = 1,
+    history_per_page: int = HISTORY_PER_PAGE_DEFAULT,
 ) -> dict[str, Any]:
     selected_brands = selected_brands or []
     selected_brands_lower = {b.lower() for b in selected_brands}
@@ -525,36 +554,24 @@ def load_dashboard(
     if len(latest) > len(chart_series):
         chart_note += f" from {len(latest)} matching prices. Search a model or spare part for a focused chart."
 
-    window = 2
-    page_numbers = sorted(
-        {p for p in range(page - window, page + window + 1) if 1 <= p <= total_pages}
-        | {1, total_pages}
-    )
+    if history_per_page not in HISTORY_PER_PAGE_OPTIONS:
+        history_per_page = HISTORY_PER_PAGE_DEFAULT
+    history_pagination = page_info(len(rows), history_page, history_per_page)
 
     return {
         "latest": paged_latest,
-        "history": rows[:100],
+        "history": rows[history_pagination["slice_start"]:history_pagination["slice_end"]],
+        "history_pagination": history_pagination,
         "brands": brands,
         "per_page_options": PER_PAGE_OPTIONS,
+        "history_per_page_options": HISTORY_PER_PAGE_OPTIONS,
         "suggestions": suggestions,
         "model_options": model_options,
         "sort": sort,
         "sort_dir": sort_dir,
         "selected_status": status,
         "selected_brands": selected_brands,
-        "pagination": {
-            "page": page,
-            "per_page": per_page,
-            "total": latest_total,
-            "total_pages": total_pages,
-            "start": page_start + 1 if latest_total else 0,
-            "end": min(page_end, latest_total),
-            "has_prev": page > 1,
-            "has_next": page < total_pages,
-            "prev_page": max(1, page - 1),
-            "next_page": min(total_pages, page + 1),
-            "page_numbers": page_numbers,
-        },
+        "pagination": page_info(latest_total, page, per_page),
         "chart_json": json.dumps(chart_series),
         "chart_note": chart_note,
         "stats": {
@@ -597,6 +614,8 @@ def parse_filters() -> dict[str, Any]:
         "status": request.args.get("status", "").strip(),
         "page": parse_positive_int(request.args.get("page"), 1),
         "per_page": parse_positive_int(request.args.get("per_page"), 100),
+        "history_page": parse_positive_int(request.args.get("hpage"), 1),
+        "history_per_page": parse_positive_int(request.args.get("hper_page"), HISTORY_PER_PAGE_DEFAULT),
         "sort": request.args.get("sort", "date").strip() or "date",
         "sort_dir": request.args.get("dir", "desc").strip() or "desc",
     }
@@ -612,6 +631,8 @@ def build_query(filters: dict[str, Any], **overrides: Any) -> dict[str, Any]:
         "brand": filters["brands"],
         "status": filters["status"],
         "per_page": filters["per_page"],
+        "hper_page": filters["history_per_page"],
+        "hpage": filters["history_page"],
         "sort": filters["sort"],
         "dir": filters["sort_dir"],
     }
@@ -660,13 +681,20 @@ def index() -> str:
         status=filters["status"],
         sort=filters["sort"],
         sort_dir=filters["sort_dir"],
+        history_page=filters["history_page"],
+        history_per_page=filters["history_per_page"],
     )
+    # Links in the Recent Checks pager keep the Latest Prices page and supply
+    # their own hpage.
+    history_query = build_query(filters, page=data["pagination"]["page"])
+    history_query.pop("hpage", None)
     return render_template(
         "dashboard.html",
         search=filters["search"],
         selected_per_page=data["pagination"]["per_page"],
         active_filters=build_active_filters(filters),
         base_query=build_query(filters),
+        history_query=history_query,
         **data,
     )
 

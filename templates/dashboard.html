@@ -156,6 +156,7 @@
         <form class="filter-bar" method="get" id="filterForm">
           <input type="hidden" name="sort" value="{{ sort }}">
           <input type="hidden" name="dir" value="{{ sort_dir }}">
+          <input type="hidden" name="hper_page" value="{{ history_pagination.per_page }}">
           <div class="filter-search">
             {{ icon('search-sm') }}
             <input name="q" value="{{ search }}" placeholder="Search model or spare part..." list="spareSuggestions" autocomplete="off">
@@ -320,22 +321,36 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="recent-checks">
         <div class="panel-heading">
           <h2>Recent Checks</h2>
-          <p>Last 100 records, including errors</p>
+          <p>
+            {% if history_pagination.total %}
+              Showing {{ history_pagination.start }}-{{ history_pagination.end }} of {{ history_pagination.total }} checks, including errors
+            {% else %}
+              0 checks
+            {% endif %}
+          </p>
         </div>
 
-        <form class="filter-bar filter-bar-compact" method="get">
+        <form class="filter-bar filter-bar-compact" method="get" action="{{ url_for('index') }}#recent-checks">
           <input type="hidden" name="q" value="{{ search }}">
           {% for brand in selected_brands %}
             <input type="hidden" name="brand" value="{{ brand }}">
           {% endfor %}
           <input type="hidden" name="per_page" value="{{ selected_per_page }}">
+          <input type="hidden" name="page" value="{{ pagination.page }}">
+          <input type="hidden" name="sort" value="{{ sort }}">
+          <input type="hidden" name="dir" value="{{ sort_dir }}">
           <select name="status" aria-label="Filter by status" onchange="this.form.submit()">
             <option value="" {% if not selected_status %}selected{% endif %}>All statuses</option>
             <option value="ok" {% if selected_status == "ok" %}selected{% endif %}>Available (ok)</option>
             <option value="error" {% if selected_status == "error" %}selected{% endif %}>Failed (error)</option>
+          </select>
+          <select name="hper_page" aria-label="Checks per page" onchange="this.form.submit()">
+            {% for option in history_per_page_options %}
+              <option value="{{ option }}" {% if history_pagination.per_page == option %}selected{% endif %}>{{ option }} rows</option>
+            {% endfor %}
           </select>
         </form>
 
@@ -390,6 +405,40 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+
+        <div class="table-footer">
+          <span class="footer-summary">
+            {% if history_pagination.total %}
+              Showing {{ history_pagination.start }}-{{ history_pagination.end }} of {{ history_pagination.total }} checks
+            {% else %}
+              Showing 0 of 0 checks
+            {% endif %}
+          </span>
+          <nav class="pagination" aria-label="Recent checks pages">
+            {% if history_pagination.has_prev %}
+              <a href="{{ url_for('index', hpage=1, _anchor='recent-checks', **history_query) }}">First</a>
+              <a href="{{ url_for('index', hpage=history_pagination.prev_page, _anchor='recent-checks', **history_query) }}">Prev</a>
+            {% else %}
+              <span class="disabled">First</span>
+              <span class="disabled">Prev</span>
+            {% endif %}
+            {% for number in history_pagination.page_numbers %}
+              {% if not loop.first and number != loop.previtem + 1 %}<span class="ellipsis">&hellip;</span>{% endif %}
+              {% if number == history_pagination.page %}
+                <strong class="current-page">{{ number }}</strong>
+              {% else %}
+                <a href="{{ url_for('index', hpage=number, _anchor='recent-checks', **history_query) }}">{{ number }}</a>
+              {% endif %}
+            {% endfor %}
+            {% if history_pagination.has_next %}
+              <a href="{{ url_for('index', hpage=history_pagination.next_page, _anchor='recent-checks', **history_query) }}">Next</a>
+              <a href="{{ url_for('index', hpage=history_pagination.total_pages, _anchor='recent-checks', **history_query) }}">Last</a>
+            {% else %}
+              <span class="disabled">Next</span>
+              <span class="disabled">Last</span>
+            {% endif %}
+          </nav>
         </div>
       </section>
     </main>
