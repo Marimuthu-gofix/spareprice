@@ -177,6 +177,11 @@ def clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "").replace("\u00a0", " ")).strip().lower()
 
 
+def clean_label(value: str | None) -> str:
+    """Display text with non-breaking spaces and doubled whitespace removed."""
+    return re.sub(r"\s+", " ", (value or "").replace("\u00a0", " ")).strip()
+
+
 def brand_key(brand: str | None) -> str:
     key = clean_text(brand)
     return COMPETITOR_BRAND_ALIASES.get(key, key)
@@ -211,10 +216,24 @@ def search_text(row: Any, *extra: str) -> str:
     return clean_text(" ".join(str(part) for part in parts))
 
 
+SEARCH_BRAND_WORDS = {
+    "apple", "samsung", "xiaomi", "oppo", "realme", "oneplus", "vivo", "iqoo", "motorola", "moto",
+}
+
+
 def matches_search(row: Any, search: str, *extra: str) -> bool:
-    haystack = search_text(row, *extra)
     needle = clean_text(search)
-    return needle in haystack or model_key(search) in haystack
+    if needle in search_text(row, *extra):
+        return True
+    # Fall back to the canonical model name, so "Apple iPhone SE 2022" finds
+    # "iPhone SE (3rd generation)". A brand named in the search must still
+    # match: "OPPO A12" must not find Samsung's "Galaxy A12".
+    key = model_key(search)
+    if not key or key not in model_key(row["model"]):
+        return False
+    prefix = needle[: -len(key)].split() if needle.endswith(key) else []
+    named = {"motorola" if word == "moto" else brand_key(word) for word in prefix if word in SEARCH_BRAND_WORDS}
+    return not named or brand_key(row["brand"]) in named
 
 
 def price_source(row: Any) -> str:
@@ -362,6 +381,7 @@ def load_dashboard(
     status: str = "",
     sort: str = "date",
     sort_dir: str = "desc",
+    paginate: bool = True,
 ) -> dict[str, Any]:
     selected_brands = selected_brands or []
     selected_brands_lower = {b.lower() for b in selected_brands}
@@ -385,6 +405,12 @@ def load_dashboard(
     latest = [dict(row) for row in latest_by_key.values()]
     attach_competitor_prices(latest)
     latest.sort(key=lambda r: (r["brand_key"], r["model_key"], r["source"] == "Cashify", r["brand"], r["part"]))
+    # One name per phone for the export picker; rows are ordered official-first,
+    # so setdefault keeps the brand's own spelling over Cashify's.
+    model_names: dict[tuple[str, str], str] = {}
+    for row in latest:
+        model_names.setdefault((row["brand_key"], row["model_key"]), clean_label(row["model"]))
+    model_options = sorted(set(model_names.values()), key=str.lower)
     if selected_brands_lower:
         latest = [row for row in latest if row["brand"].lower() in selected_brands_lower]
         rows = [row for row in rows if row["brand"].lower() in selected_brands_lower]
@@ -408,6 +434,9 @@ def load_dashboard(
 
     latest_total = len(latest)
     per_page = per_page if per_page in PER_PAGE_OPTIONS else 100
+    if not paginate:
+        per_page = max(latest_total, 1)
+        page = 1
     total_pages = max(1, (latest_total + per_page - 1) // per_page)
     page = min(max(page, 1), total_pages)
     page_start = (page - 1) * per_page
@@ -461,6 +490,7 @@ def load_dashboard(
         "brands": brands,
         "per_page_options": PER_PAGE_OPTIONS,
         "suggestions": suggestions,
+        "model_options": model_options,
         "sort": sort,
         "sort_dir": sort_dir,
         "selected_status": status,
@@ -584,27 +614,136 @@ def index() -> str:
     )
 
 
+def export_rows(scope: str, model: str = "") -> tuple[list[dict[str, Any]], str]:
+    """Rows for an export plus a short name for the file.
+
+    scope "all"   -> every tracked price
+    scope "view"  -> whatever the dashboard filters currently show
+    scope "model" -> one phone, from every source (official + Cashify)
+    """
+    filters = parse_filters()
+    if scope == "view":
+        data = load_dashboard(
+            search=filters["search"], selected_brands=filters["brands"], status=filters["status"],
+            sort="model", sort_dir="asc", paginate=False,
+        )
+        return [item[0] for item in data["latest"]], "current_view"
+    data = load_dashboard(sort="model", sort_dir="asc", paginate=False)
+    rows = [item[0] for item in data["latest"]]
+    if scope != "model" or not model.strip():
+        return rows, "all_models"
+    wanted = model_key(model)
+    wanted_loose = model_key(model, loose=True)
+    chosen = [row for row in rows if row["model_key"] == wanted]
+    if not chosen:
+        chosen = [row for row in rows if model_key(row["model"], loose=True) == wanted_loose]
+    if not chosen:
+        chosen = [row for row in rows if matches_search(row, model)]
+    label = re.sub(r"[^a-z0-9]+", "_", clean_label(model).lower()).strip("_") or "model"
+    return chosen, label
+
+
 @app.get("/export.csv")
 def export_csv_now() -> Any:
-    filters = parse_filters()
-    data = load_dashboard(
-        search=filters["search"],
-        selected_brands=filters["brands"],
-        page=1,
-        per_page=10**9,
-        status=filters["status"],
-        sort=filters["sort"],
-        sort_dir=filters["sort_dir"],
-    )
+    rows, label = export_rows(request.args.get("scope", "view"), request.args.get("model", ""))
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["brand", "model", "part", "price", "currency", "last_checked", "url"])
-    for row, _start, _size, _group_id in data["latest"]:
-        writer.writerow([row["brand"], row["model"], row["part"], row["price_value"], row["currency"], row["date"], row["url"]])
+    writer.writerow(["brand", "model", "part", "source", "price", "currency", "last_checked", "url"])
+    for row in rows:
+        writer.writerow([
+            row["brand"], clean_label(row["model"]), row["part"], row["source"], row["price_value"],
+            row["currency"], row["date"], row["url"],
+        ])
     return Response(
         buffer.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=spareprice_export.csv"},
+        headers={"Content-Disposition": f"attachment; filename=spareprice_{label}.csv"},
+    )
+
+
+def excel_datetime(value: str | None) -> Any:
+    """ISO timestamp -> naive local datetime, which Excel can sort and filter."""
+    try:
+        parsed = datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return value or ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(DISPLAY_TIMEZONE).replace(tzinfo=None)
+
+
+def style_sheet(sheet: Any, widths: list[int], money_columns: list[int], date_columns: list[int]) -> None:
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    header_fill = PatternFill("solid", fgColor="1F3A8A")
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(vertical="center")
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    for column in money_columns:
+        for cell in sheet[get_column_letter(column)][1:]:
+            cell.number_format = "#,##0"
+    for column in date_columns:
+        for cell in sheet[get_column_letter(column)][1:]:
+            cell.number_format = "dd-mmm-yyyy hh:mm"
+    sheet.freeze_panes = "A2"
+    if sheet.max_row > 1:
+        sheet.auto_filter.ref = sheet.dimensions
+
+
+@app.get("/export.xlsx")
+def export_excel_now() -> Any:
+    from openpyxl import Workbook
+
+    rows, label = export_rows(request.args.get("scope", "all"), request.args.get("model", ""))
+    workbook = Workbook()
+
+    prices = workbook.active
+    prices.title = "Prices"
+    prices.append([
+        "Brand", "Model", "Spare Part", "Category", "Source", "Price", "Currency",
+        "Other Source", "Other Source Part", "Other Source Price", "Last Checked", "Source URL",
+    ])
+    for row in rows:
+        other = row["competitors"][0] if row["competitors"] else None
+        prices.append([
+            row["brand"], clean_label(row["model"]), row["part"], row["category"] or "", row["source"],
+            row["price_value"], row["currency"] or "",
+            other["source"] if other else "", other["part"] if other else "",
+            other["price_value"] if other else None,
+            excel_datetime(row["date"]), row["url"],
+        ])
+    style_sheet(prices, [12, 30, 34, 16, 12, 12, 10, 14, 30, 18, 20, 60], money_columns=[6, 10], date_columns=[11])
+
+    # One line per repair that both the brand and Cashify price, side by side.
+    compare = workbook.create_sheet("Official vs Cashify")
+    compare.append([
+        "Brand", "Model", "Category", "Official Part", "Official Price",
+        "Cashify Part", "Cashify Price", "Difference (Official - Cashify)", "Cheaper",
+    ])
+    for row in rows:
+        if row["source"] == "Cashify":
+            continue
+        for other in row["competitors"]:
+            if other["source"] != "Cashify" or row["price_value"] is None or other["price_value"] is None:
+                continue
+            difference = row["price_value"] - other["price_value"]
+            cheaper = "Same" if difference == 0 else ("Cashify" if difference > 0 else row["source"])
+            compare.append([
+                row["brand"], clean_label(row["model"]), row["category"], row["part"], row["price_value"],
+                other["part"], other["price_value"], difference, cheaper,
+            ])
+    style_sheet(compare, [12, 30, 16, 34, 16, 28, 16, 30, 12], money_columns=[5, 7, 8], date_columns=[])
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return Response(
+        buffer.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=spareprice_{label}.xlsx"},
     )
 
 

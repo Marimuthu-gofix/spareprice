@@ -93,7 +93,7 @@ The dashboard reads `price_history.sqlite3` and shows latest prices, recent chec
 
 Use **Check All Prices** in the dashboard to run the scraper for every enabled item in `config.json`. The button runs in the background and refreshes the page after it finishes.
 
-Use **Discover All Mobiles** to crawl all model and spare-part/service prices exposed by the supported Apple, Samsung, OPPO, realme, OnePlus, Mi/Xiaomi, vivo, iQOO, Motorola, and Cashify pages. Cashify records Cashify service prices separately from manufacturer prices. This can take several minutes because it waits between models.
+Use **Scrape Selected** with the brand set to **All brands** and the model box empty to crawl all model and spare-part/service prices exposed by the supported Apple, Samsung, OPPO, realme, OnePlus, Mi/Xiaomi, vivo, iQOO, Motorola, and Cashify pages. Cashify records Cashify service prices separately from manufacturer prices. This can take several minutes because it waits between models.
 
 You can also run catalog discovery from PowerShell:
 
@@ -117,6 +117,16 @@ python spareprice.py discover-all --brand cashify --max-models 1 --delay 1
 
 Keep the delay conservative. Full-catalog scraping is more likely to trigger blocking or ToS issues than your original small shortlist.
 
+Brand crawls run side by side, four at a time by default, because each one talks to a different website. Use `--parallel` to change that:
+
+```powershell
+python spareprice.py discover-all --brand all --delay 2 --parallel 6
+```
+
+Cashify discovery visits every series tab on a brand page (the page itself only shows a popular subset) and opens each model's quote page directly, so a full brand takes a few minutes rather than twenty.
+
+Cashify prices depend on the city. Discovery reads them for Chennai by default; pass `--cashify-city gurgaon` for Gurgaon. To add another city, pick it on cashify.in, copy the values from the `_cs__city-info__v1` cookie into `CASHIFY_CITIES` in `spareprice.py`.
+
 ## Vercel Deployment
 
 This project is ready to deploy as a Flask app on Vercel. Vercel uses `pyproject.toml` and this configured entrypoint:
@@ -130,7 +140,7 @@ The hosted Vercel dashboard is read-only. It displays the committed `price_histo
 
 ## Render Deployment
 
-Use Render when you want the live **Check All Prices** and **Discover All Mobiles** buttons to run. Render can host this as a long-running web service with Playwright/Chromium installed.
+Use Render when you want the live **Check All Prices** and **Scrape Selected** buttons to run. Render can host this as a long-running web service with Playwright/Chromium installed.
 
 From the Render dashboard:
 

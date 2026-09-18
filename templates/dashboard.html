@@ -28,10 +28,34 @@
           {{ icon('refresh') }}
           <span>Refresh</span>
         </button>
-        <a class="icon-btn" href="{{ url_for('export_csv_now', **base_query) }}" title="Export current view to CSV">
-          {{ icon('download') }}
-          <span>Export CSV</span>
-        </a>
+        <details class="export-menu">
+          <summary class="icon-btn" title="Export prices to Excel">
+            {{ icon('download') }}
+            <span>Export Excel</span>
+            {{ icon('chevron') }}
+          </summary>
+          <div class="export-panel">
+            <a class="export-option" href="{{ url_for('export_excel_now', scope='all') }}">
+              <strong>All models</strong>
+              <span>Every tracked price, official and Cashify</span>
+            </a>
+            <a class="export-option" href="{{ url_for('export_excel_now', scope='view', **base_query) }}">
+              <strong>Current view</strong>
+              <span>Only what the filters below are showing</span>
+            </a>
+            <form class="export-model" method="get" action="{{ url_for('export_excel_now') }}">
+              <input type="hidden" name="scope" value="model">
+              <label for="exportModel"><strong>Particular model</strong></label>
+              <input id="exportModel" name="model" list="exportModelOptions" placeholder="Type a model, e.g. Galaxy Z Fold5" autocomplete="off" required>
+              <datalist id="exportModelOptions">
+                {% for name in model_options %}
+                  <option value="{{ name }}"></option>
+                {% endfor %}
+              </datalist>
+              <button type="submit">Export this model</button>
+            </form>
+          </div>
+        </details>
         <span class="mode-pill {{ 'readonly' if hosted_read_only else 'live' }}">
           {{ icon('dot') }}
           {{ "Hosted (read-only)" if hosted_read_only else "Local (live)" }}
@@ -51,7 +75,7 @@
             {% elif job.started_at %}
               Started {{ job.started_at|localdate }}
             {% else %}
-              Click a button below to scrape configured devices or discover all supported mobiles.
+              Check the configured devices, or pick a brand and model and press Scrape Selected.
             {% endif %}
           </span>
         </div>
@@ -62,12 +86,7 @@
         <section class="scrape-toolbar">
           <form action="{{ url_for('check_now') }}" method="post">
             <button data-job-button data-idle-label="Check All Prices" data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" {% if job.running %}disabled{% endif %}>
-              {{ icon('play') }} {% if job.running %}Checking...{% else %}Check All Prices{% endif %}
-            </button>
-          </form>
-          <form action="{{ url_for('discover_all_now') }}" method="post">
-            <button data-job-button data-idle-label="Discover All Mobiles" data-running-label="Discovering..." data-start-label="Discovering all supported mobile model and spare-part prices..." class="secondary-action" type="submit" {% if job.running %}disabled{% endif %}>
-              {{ icon('search') }} {% if job.running %}Working...{% else %}Discover All Mobiles{% endif %}
+              {{ icon('play') }} {% if job.running and (job.message or '').startswith('Checking') %}Checking...{% else %}Check All Prices{% endif %}
             </button>
           </form>
           <form action="{{ url_for('discover_scope_now') }}" method="post" class="scope-form">

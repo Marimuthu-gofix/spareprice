@@ -12,7 +12,8 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
+from urllib.parse import quote, urlencode
 
 LOGGER = logging.getLogger("spareprice")
 PRICE_RE = re.compile(
@@ -56,6 +57,13 @@ VIVO_SUPPORT_URL = "https://www.vivo.com/in/support/accessory"
 IQOO_SUPPORT_URL = "https://www.iqoo.com/in/support/accessory"
 MOTOROLA_SUPPORT_URL = "https://en-in.support.motorola.com/app/answers/detail/a_id/133816"
 CASHIFY_REPAIR_URL = "https://www.cashify.in/repair"
+# Cashify prices and availability depend on the chosen city, which the site
+# keeps in two cookies. Values were read from the site after picking the city.
+CASHIFY_CITIES: dict[str, dict[str, Any]] = {
+    "chennai": {"ri": 333, "rn": "Chennai", "dp": 600027, "seo": "chennai"},
+    "gurgaon": {"ri": 249, "rn": "Gurgaon", "dp": 122001, "seo": "gurgaon"},
+}
+DEFAULT_CASHIFY_CITY = "chennai"
 
 
 @dataclass(frozen=True)
@@ -106,6 +114,31 @@ def default_db_path(fallback: str | Path) -> Path:
 
 def browser_launch_args() -> list[str]:
     return ["--no-sandbox", "--disable-dev-shm-usage"]
+
+
+# Requests the catalog crawlers never need. Skipping them makes every page
+# load noticeably faster without changing how often a site is hit.
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+BLOCKED_URL_FRAGMENTS = (
+    "google-analytics.", "googletagmanager.", "doubleclick.", "facebook.", "hotjar.", "clarity.ms",
+    "moengage", "webengage", "clevertap", "branch.io", "appsflyer", "newrelic", "sentry.io",
+)
+
+
+async def new_crawl_context(browser: Any) -> Any:
+    context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+
+    async def skip_heavy_requests(route: Any) -> None:
+        request = route.request
+        if request.resource_type in BLOCKED_RESOURCE_TYPES or any(
+            fragment in request.url for fragment in BLOCKED_URL_FRAGMENTS
+        ):
+            await route.abort()
+        else:
+            await route.continue_()
+
+    await context.route("**/*", skip_heavy_requests)
+    return context
 
 
 def model_matches_filter(model: str, model_filter: str | None) -> bool:
@@ -276,33 +309,53 @@ async def discover_all(
     realme_series: str | None,
     model_filter: str | None = None,
     db_path: Path | None = None,
+    parallel: int = 4,
+    cashify_city: str = DEFAULT_CASHIFY_CITY,
 ) -> int:
     from playwright.async_api import async_playwright
 
     conn = connect_db(db_path or default_db_path("price_history.sqlite3"))
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True, args=browser_launch_args())
-        context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+        context = await new_crawl_context(browser)
+        await context.add_cookies(cashify_city_cookies(cashify_city))
+        # Each brand crawler talks to a different website, so they run side by
+        # side (up to `parallel` at once) without hitting any one site harder.
+        jobs: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         if brand in {"all", "apple"}:
-            await discover_apple(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("Apple", lambda: discover_apple(context, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "samsung"}:
-            await discover_samsung(browser, conn, delay_seconds, max_models, samsung_series, model_filter)
+            jobs.append(("Samsung", lambda: discover_samsung(browser, conn, delay_seconds, max_models, samsung_series, model_filter)))
         if brand in {"all", "oppo"}:
-            await discover_oppo(browser, conn, delay_seconds, max_models, oppo_series, model_filter)
+            jobs.append(("OPPO", lambda: discover_oppo(browser, conn, delay_seconds, max_models, oppo_series, model_filter)))
         if brand in {"all", "realme"}:
-            await discover_realme(browser, conn, delay_seconds, max_models, realme_series, model_filter)
+            jobs.append(("realme", lambda: discover_realme(browser, conn, delay_seconds, max_models, realme_series, model_filter)))
         if brand in {"all", "oneplus"}:
-            await discover_oneplus(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("OnePlus", lambda: discover_oneplus(context, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "mi"}:
-            await discover_mi(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("Mi", lambda: discover_mi(context, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "vivo"}:
-            await discover_vivo(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("vivo", lambda: discover_vivo(context, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "iqoo"}:
-            await discover_iqoo(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("iQOO", lambda: discover_iqoo(context, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "motorola"}:
-            await discover_motorola(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("Motorola", lambda: discover_motorola(context, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "cashify"}:
-            await discover_cashify(context, conn, delay_seconds, max_models, model_filter)
+            jobs.append(("Cashify", lambda: discover_cashify(context, conn, delay_seconds, max_models, model_filter)))
+
+        semaphore = asyncio.Semaphore(max(1, parallel))
+
+        async def run_job(name: str, job: Callable[[], Awaitable[None]]) -> None:
+            async with semaphore:
+                LOGGER.info("Starting %s catalog discovery", name)
+                try:
+                    await job()
+                except Exception:
+                    LOGGER.exception("%s catalog discovery failed", name)
+                LOGGER.info("Finished %s catalog discovery", name)
+
+        LOGGER.info("Running %s catalog crawls, up to %s at a time", len(jobs), max(1, parallel))
+        await asyncio.gather(*(run_job(name, job) for name, job in jobs))
         await context.close()
         await browser.close()
     conn.close()
@@ -382,7 +435,7 @@ async def discover_samsung(
         series_values = [item for item in series_values if item[0] == samsung_series]
     count = 0
     for series_value, series_label in series_values:
-        context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+        context = await new_crawl_context(browser)
         page = await context.new_page()
         page.set_default_timeout(45000)
         try:
@@ -523,7 +576,7 @@ async def discover_oppo(
     if oppo_series:
         series_labels = [label for label in series_labels if label == oppo_series]
     count = 0
-    context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+    context = await new_crawl_context(browser)
     page = await context.new_page()
     page.set_default_timeout(30000)
     try:
@@ -579,7 +632,7 @@ async def discover_realme(
     if realme_series:
         series_labels = [label for label in series_labels if label == realme_series]
     count = 0
-    context = await browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900})
+    context = await new_crawl_context(browser)
     page = await context.new_page()
     page.set_default_timeout(30000)
     try:
@@ -867,6 +920,8 @@ async def discover_cashify(
     count = 0
     try:
         await goto_catalog_page(page, CASHIFY_REPAIR_URL)
+        pincode = await page.evaluate("() => (document.cookie.match(/_cs__pc__v1=(\\d+)/) || [])[1] || ''")
+        LOGGER.info("Cashify prices are being read for pincode %s", pincode or "unknown")
         brand_urls = await page.locator('a[href*="/repair/"]').evaluate_all(
             r"""
             anchors => [...new Set(anchors.map(anchor => anchor.href))]
@@ -884,24 +939,42 @@ async def discover_cashify(
         for brand_url in brand_urls:
             cashify_brand = cashify_brand_name(str(brand_url))
             exact_brand_filter = bool(model_filter and model_filter.strip().lower() == cashify_brand.lower())
-            await goto_catalog_page(page, str(brand_url))
             # FRAGILE SITE ASSUMPTION: the brand page first shows only a
             # "popular" subset of models. The rest sit behind series tabs
-            # ("Galaxy Fold Series", "Galaxy S Series", ...) that swap the grid,
-            # so every tab is visited and each model remembers its tab.
-            series_labels = await cashify_series_labels(page)
-            model_series: dict[str, str | None] = {}
-            for series_label in [None, *series_labels]:
-                if series_label is not None:
-                    await goto_catalog_page(page, str(brand_url))
-                    if not await select_cashify_series(page, series_label):
-                        LOGGER.warning("Cashify %s series tab was not found: %s", cashify_brand, series_label)
-                        continue
-                await load_all_cashify_model_cards(page)
-                for raw_model_name in await cashify_model_card_names(page):
-                    model_series.setdefault(raw_model_name, series_label)
+            # ("Galaxy Fold Series", "Galaxy S Series", ...) that swap the grid.
+            # Each grid load also fetches a JSON catalog (product-search-template)
+            # carrying the ids needed to open a model's quote page directly, so
+            # those responses are captured while the tabs are visited.
+            catalog: dict[str, dict[str, Any]] = {}
+            pending: list[Any] = []
+
+            def capture_catalog(response: Any) -> None:
+                if "product-search-template" in response.url and response.ok:
+                    pending.append(asyncio.ensure_future(collect_cashify_catalog(response, catalog)))
+
+            page.on("response", capture_catalog)
+            try:
+                await goto_catalog_page(page, str(brand_url))
+                series_labels = await cashify_series_labels(page)
+                model_series: dict[str, str | None] = {}
+                for series_label in [None, *series_labels]:
+                    if series_label is not None:
+                        await goto_catalog_page(page, str(brand_url))
+                        if not await select_cashify_series(page, series_label):
+                            LOGGER.warning("Cashify %s series tab was not found: %s", cashify_brand, series_label)
+                            continue
+                    await load_all_cashify_model_cards(page)
+                    for raw_model_name in await cashify_model_card_names(page):
+                        model_series.setdefault(raw_model_name, series_label)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+            finally:
+                page.remove_listener("response", capture_catalog)
+            for catalog_name in catalog:
+                model_series.setdefault(catalog_name, None)
             LOGGER.info(
-                "Cashify %s mobile models found: %s across %s series", cashify_brand, len(model_series), len(series_labels)
+                "Cashify %s mobile models found: %s across %s series (%s with direct quote links)",
+                cashify_brand, len(model_series), len(series_labels), len(catalog),
             )
             for raw_model_name, series_label in model_series.items():
                 model_name = normalize_space(str(raw_model_name or ""))
@@ -910,18 +983,26 @@ async def discover_cashify(
                 if max_models is not None and count >= max_models:
                     return
                 try:
-                    await goto_catalog_page(page, str(brand_url))
-                    if series_label is not None and not await select_cashify_series(page, series_label):
-                        raise ValueError(f"Cashify series tab was not found: {series_label}")
-                    await load_all_cashify_model_cards(page)
-                    card = page.locator(
-                        f'.cursor-pointer img[src*="/product/"][alt="{css_escape(model_name)}"]'
-                    ).first
-                    if not await card.count():
-                        raise ValueError("Cashify model card was not found after loading the brand page")
-                    await card.click()
-                    await page.wait_for_url("**/repair/user/order/quote?**", timeout=15000)
-                    await page.get_by_role("heading", name="Pick Your Repair Service", exact=True).wait_for(state="visible")
+                    entry = catalog.get(model_name)
+                    if entry is not None:
+                        # Fast path: open the quote page straight away.
+                        await page.goto(cashify_quote_url(entry), wait_until="domcontentloaded", timeout=60000)
+                    else:
+                        # Fallback: reproduce the click flow through the brand page.
+                        await goto_catalog_page(page, str(brand_url))
+                        if series_label is not None and not await select_cashify_series(page, series_label):
+                            raise ValueError(f"Cashify series tab was not found: {series_label}")
+                        await load_all_cashify_model_cards(page)
+                        card = page.locator(
+                            f'.cursor-pointer img[src*="/product/"][alt="{css_escape(model_name)}"]'
+                        ).first
+                        if not await card.count():
+                            raise ValueError("Cashify model card was not found after loading the brand page")
+                        await card.click()
+                        await page.wait_for_url("**/repair/user/order/quote?**", timeout=15000)
+                    await page.get_by_role("heading", name="Pick Your Repair Service", exact=True).wait_for(
+                        state="visible", timeout=20000
+                    )
                     rows = [
                         {**row, "part": f"Cashify - {row['part']}"}
                         for row in cashify_price_rows(await page.locator("body").inner_text())
@@ -940,6 +1021,64 @@ async def discover_cashify(
         LOGGER.exception("Cashify catalog discovery failed")
     finally:
         await page.close()
+
+
+def cashify_city_cookies(city: str) -> list[dict[str, Any]]:
+    """Cookies that make Cashify quote prices for the requested city."""
+    key = normalize_space(city or "").lower()
+    if key not in CASHIFY_CITIES:
+        raise SystemExit(f"Unknown Cashify city {city!r}; choose from: {', '.join(sorted(CASHIFY_CITIES))}")
+    info = CASHIFY_CITIES[key]
+    city_info = {
+        "ri": info["ri"], "rn": info["rn"], "dp": info["dp"], "isp": "1", "xmd": 1, "cs": [1],
+        "pt": ["csh"], "rcy": 1, "seo": info["seo"], "id": False,
+    }
+    common = {"domain": ".cashify.in", "path": "/", "secure": True, "sameSite": "Lax"}
+    return [
+        {"name": "_cs__city-info__v1", "value": quote(json.dumps(city_info, separators=(",", ":")), safe=""), **common},
+        {"name": "_cs__pc__v1", "value": str(info["dp"]), **common},
+    ]
+
+
+async def collect_cashify_catalog(response: Any, catalog: dict[str, dict[str, Any]]) -> None:
+    """Record the ids Cashify's model grid JSON carries for each model."""
+    try:
+        data = await response.json()
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    image_base = str(data.get("piu") or "")
+    for item in data.get("dt") or []:
+        if not isinstance(item, dict):
+            continue
+        name = normalize_space(str(item.get("pn") or ""))
+        if not name or not item.get("pi") or not item.get("bid"):
+            continue
+        colours = ((item.get("specs") or {}).get("color")) or []
+        first_colour = colours[0] if colours and isinstance(colours[0], dict) else {}
+        if not first_colour.get("id"):
+            continue
+        catalog.setdefault(
+            name,
+            {
+                "bid": item["bid"],
+                "bn": item.get("bn") or "",
+                "pid": item["pi"],
+                "plid": item.get("pli") or 20,
+                "pn": name,
+                "pcid": first_colour["id"],
+                "pcn": first_colour.get("dval") or "",
+                "cdn": image_base,
+                "in": item.get("pin") or "",
+            },
+        )
+
+
+def cashify_quote_url(entry: dict[str, Any]) -> str:
+    # FRAGILE SITE ASSUMPTION: this is the URL Cashify itself navigates to when
+    # a model card is clicked and the first colour is chosen.
+    return f"{CASHIFY_REPAIR_URL}/user/order/quote?" + urlencode(entry)
 
 
 async def cashify_model_card_names(page: Any) -> list[str]:
@@ -1645,6 +1784,11 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--delay", type=float, default=3.0)
     discover_parser.add_argument("--max-models", type=int)
     discover_parser.add_argument("--model", help="Only crawl models containing this text.")
+    discover_parser.add_argument("--parallel", type=int, default=4, help="How many brand crawls run at the same time.")
+    discover_parser.add_argument(
+        "--cashify-city", default=DEFAULT_CASHIFY_CITY,
+        help=f"City whose Cashify prices to read ({', '.join(sorted(CASHIFY_CITIES))}).",
+    )
     discover_parser.add_argument("--db", default="price_history.sqlite3", type=Path)
     discover_parser.add_argument(
         "--samsung-series",
@@ -1698,6 +1842,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.realme_series,
                 args.model,
                 args.db,
+                args.parallel,
+                args.cashify_city,
             )
         )
     raise AssertionError(f"Unhandled command: {args.command}")
