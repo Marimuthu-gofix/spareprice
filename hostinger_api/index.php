@@ -59,8 +59,38 @@ if ($expectedKey === '' || !hash_equals($expectedKey, $givenKey)) {
 }
 
 // --------------------------------------------------------------- database
+function normalizeDsn(string $dsn, string $user): string
+{
+    // Accept "mysql:host=localhost;u123_db;charset=utf8mb4" (a name without
+    // the dbname= label) and fill in dbname from the user name when missing,
+    // which is Hostinger's usual naming.
+    if (!str_starts_with($dsn, 'mysql:')) {
+        return $dsn;
+    }
+    $parts = array_filter(array_map('trim', explode(';', substr($dsn, strlen('mysql:')))), 'strlen');
+    $pairs = [];
+    $bare = null;
+    foreach ($parts as $part) {
+        if (str_contains($part, '=')) {
+            [$key, $value] = explode('=', $part, 2);
+            $pairs[strtolower(trim($key))] = trim($value);
+        } elseif ($bare === null) {
+            $bare = $part;
+        }
+    }
+    if (empty($pairs['dbname'])) {
+        $pairs['dbname'] = $bare ?? $user;
+    }
+    $pairs += ['host' => 'localhost', 'charset' => 'utf8mb4'];
+    $out = [];
+    foreach ($pairs as $key => $value) {
+        $out[] = $key . '=' . $value;
+    }
+    return 'mysql:' . implode(';', $out);
+}
+
 try {
-    $pdo = new PDO((string) $config['dsn'], (string) ($config['user'] ?? ''), (string) ($config['password'] ?? ''), [
+    $pdo = new PDO(normalizeDsn((string) $config['dsn'], (string) ($config['user'] ?? '')), (string) ($config['user'] ?? ''), (string) ($config['password'] ?? ''), [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
