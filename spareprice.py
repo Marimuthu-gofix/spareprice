@@ -66,6 +66,15 @@ CASHIFY_CITIES: dict[str, dict[str, Any]] = {
     "gurgaon": {"ri": 249, "rn": "Gurgaon", "dp": 122001, "seo": "gurgaon"},
 }
 DEFAULT_CASHIFY_CITY = "chennai"
+# Words in a model name that identify its Cashify brand page.
+CASHIFY_MODEL_BRAND_HINTS = {
+    "iphone": "apple", "galaxy": "samsung", "pixel": "google", "redmi": "xiaomi", "poco": "poco",
+    "narzo": "realme", "nord": "oneplus", "moto ": "motorola", "moto": "motorola", "edge ": "motorola",
+    "reno": "oppo", "find ": "oppo", "iqoo": "iqoo", "nothing": "nothing", "infinix": "infinix",
+    "honor": "honor", "nokia": "nokia", "asus": "asus", "rog ": "asus", "vivo": "vivo", "xiaomi": "xiaomi",
+    "realme": "realme", "oneplus": "oneplus", "oppo": "oppo", "samsung": "samsung", "apple": "apple",
+    "google": "google", "motorola": "motorola",
+}
 
 
 @dataclass(frozen=True)
@@ -993,10 +1002,15 @@ async def discover_cashify(
         )
         if model_filter:
             requested = model_filter.lower()
-            matching_brands = [
-                url for url in brand_urls if cashify_brand_name(str(url)).lower() in requested
-            ]
+            wanted_brands = {cashify_brand_name(str(url)).lower() for url in brand_urls if cashify_brand_name(str(url)).lower() in requested}
+            # A model name usually implies its brand ("iPhone 17e" -> Apple), so
+            # only that brand page is visited instead of all sixteen.
+            for keyword, hinted in CASHIFY_MODEL_BRAND_HINTS.items():
+                if keyword in requested:
+                    wanted_brands.add(hinted)
+            matching_brands = [url for url in brand_urls if cashify_brand_name(str(url)).lower() in wanted_brands]
             if matching_brands:
+                LOGGER.info("Cashify brands matching %r: %s", model_filter, ", ".join(sorted(wanted_brands)))
                 brand_urls = matching_brands
         LOGGER.info("Cashify repair brands found: %s", len(brand_urls))
         for brand_url in brand_urls:
