@@ -428,32 +428,38 @@ def load_price_data() -> dict[str, Any]:
     Building this is the expensive part of a page load (seconds of CPU on a
     small hosted instance), so it is kept until the database file changes.
     Callers must treat the returned lists and rows as read-only."""
-    stamp: tuple[Any, ...]
+    path = db_path()
+    try:
+        info = path.stat()
+        local_stamp: tuple[Any, ...] = (str(path), info.st_mtime_ns, info.st_size)
+    except OSError:
+        local_stamp = (str(path), 0, 0)
+    stamp: tuple[Any, ...] = local_stamp
+    source = f"local file {path.name}"
+    remote_error = ""
     if REMOTE_STORE is not None:
         try:
             remote = REMOTE_STORE.status()
             stamp = ("remote", REMOTE_STORE.base_url, remote.get("count"), remote.get("max_id"))
+            source = REMOTE_STORE.base_url
         except Exception as exc:
+            remote_error = str(exc)
             app.logger.warning("Remote price store %s is unreachable: %s", REMOTE_STORE.base_url, exc)
             if _PRICE_DATA.get("stamp") is not None:
+                _PRICE_DATA["remote_error"] = remote_error
                 return _PRICE_DATA  # keep showing what we have
-            stamp = ("remote-unavailable",)
-    else:
-        path = db_path()
-        try:
-            info = path.stat()
-            stamp = (str(path), info.st_mtime_ns, info.st_size)
-        except OSError:
-            stamp = (str(path), 0, 0)
+            # Nothing cached yet: show the local file so the site is not blank,
+            # and keep retrying the remote store on later requests.
+            stamp = ("remote-unavailable", *local_stamp)
+            source = f"local file {path.name} (remote store unreachable)"
     with _PRICE_DATA_LOCK:
         if _PRICE_DATA.get("stamp") == stamp:
+            _PRICE_DATA["remote_error"] = remote_error
             return _PRICE_DATA
         rows: list[Any]
-        if REMOTE_STORE is not None and stamp[0] == "remote":
-            rows = REMOTE_STORE.fetch_all()
+        if stamp[0] == "remote":
+            rows = REMOTE_STORE.fetch_all()  # type: ignore[union-attr]
             rows.sort(key=lambda r: r.get("date") or "", reverse=True)
-        elif REMOTE_STORE is not None:
-            rows = []
         else:
             conn = connect()
             rows = conn.execute(
@@ -481,6 +487,8 @@ def load_price_data() -> dict[str, Any]:
 
         _PRICE_DATA.update(
             stamp=stamp,
+            source=source,
+            remote_error=remote_error,
             rows=rows,
             latest=latest,
             brands=sorted(set(SUPPORTED_BRANDS) | {row["brand"] for row in rows}),
@@ -610,7 +618,8 @@ def load_dashboard(
         },
         "job": current_job_state(),
         "hosted_read_only": HOSTED_READ_ONLY,
-        "data_source": REMOTE_STORE.base_url if REMOTE_STORE is not None else str(db_path().name),
+        "data_source": cached.get("source", ""),
+        "remote_error": cached.get("remote_error", ""),
     }
 
 

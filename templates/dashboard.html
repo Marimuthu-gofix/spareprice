@@ -52,9 +52,10 @@
             </form>
           </div>
         </details>
-        <span class="mode-pill {{ 'readonly' if hosted_read_only else 'live' }}">
+        <span class="mode-pill {{ 'readonly' if hosted_read_only else 'live' }}" title="Data source: {{ data_source }}{% if remote_error %} | {{ remote_error }}{% endif %}">
           {{ icon('dot') }}
           {{ "Hosted (read-only)" if hosted_read_only else "Local (live)" }}
+          &middot; {{ "Hostinger" if data_source.startswith("http") else "SQLite file" }}{% if remote_error %} (store unreachable){% endif %}
         </span>
       </div>
     </header>
