@@ -138,6 +138,10 @@ sends every row there as it goes and the dashboard reads from there.
 See [hostinger_api/README.md](hostinger_api/README.md) for the setup, and
 run `python spareprice.py push-history` once to upload the existing history.
 
+`price_history.sqlite3` is no longer committed and is excluded from the Docker
+image, so a Render deploy carries no price data of its own. Scrapes run on
+the PC or on Render both save straight to the store.
+
 ## Vercel Deployment
 
 This project is ready to deploy as a Flask app on Vercel. Vercel uses `pyproject.toml` and this configured entrypoint:

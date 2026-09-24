@@ -1,0 +1,15 @@
+# Keep data and local tooling out of the Render image: the live site reads
+# prices from the Hostinger store, so the container must not carry a copy.
+*.sqlite3
+*.csv
+*.png
+backups/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.git/
+.claude/
+.pytest_cache/
+customer_api/
+hostinger_api/
