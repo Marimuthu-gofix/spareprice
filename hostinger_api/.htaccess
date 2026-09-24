@@ -1,0 +1,13 @@
+# Send every request in this folder to index.php, which does the routing.
+# The rule is relative to this folder, so the folder can sit anywhere.
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [L]
+
+# Never serve the configuration files.
+<Files "config.php">
+    Require all denied
+</Files>
+<Files "config.example.php">
+    Require all denied
+</Files>

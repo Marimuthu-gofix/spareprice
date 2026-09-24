@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlencode
 
+from price_store import RemotePriceStore
+
 LOGGER = logging.getLogger("spareprice")
 PRICE_RE = re.compile(
     r"(?P<currency>₹|Rs\.?|INR|USD|\$|EUR|€|GBP|£)?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
@@ -147,6 +149,11 @@ def model_matches_filter(model: str, model_filter: str | None) -> bool:
     return model_filter.lower() in model.lower()
 
 
+# Optional remote store (see hostinger_api/README.md). Every saved row also
+# goes there when PRICE_API_URL and PRICE_API_KEY are set.
+REMOTE_STORE = RemotePriceStore.from_env()
+
+
 def connect_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -207,6 +214,21 @@ def save_result(
         ),
     )
     conn.commit()
+    if REMOTE_STORE is not None:
+        REMOTE_STORE.add(
+            {
+                "date": timestamp,
+                "brand": entry.brand,
+                "model": entry.model,
+                "part": entry.part,
+                "price": price_text,
+                "price_value": price_value,
+                "currency": currency or entry.currency,
+                "url": entry.url,
+                "status": status,
+                "error": error,
+            }
+        )
 
 
 async def run_tracker(config_path: Path) -> int:
@@ -273,6 +295,7 @@ async def run_tracker(config_path: Path) -> int:
         await context.close()
         await browser.close()
     conn.close()
+    flush_remote_store()
     return 0
 
 
@@ -359,6 +382,46 @@ async def discover_all(
         await context.close()
         await browser.close()
     conn.close()
+    flush_remote_store()
+    return 0
+
+
+def flush_remote_store() -> None:
+    if REMOTE_STORE is None:
+        return
+    if REMOTE_STORE.flush():
+        LOGGER.info("All rows were sent to %s", REMOTE_STORE.base_url)
+    else:
+        LOGGER.warning("%s rows are still waiting to be sent to %s", REMOTE_STORE.pending(), REMOTE_STORE.base_url)
+
+
+def push_history(db_path: Path, batch_size: int, after_id: int) -> int:
+    """Upload the local SQLite history to the remote store, oldest first."""
+    if REMOTE_STORE is None:
+        raise SystemExit("Set PRICE_API_URL and PRICE_API_KEY first (see hostinger_api/README.md).")
+    if not REMOTE_STORE.health():
+        raise SystemExit(f"{REMOTE_STORE.base_url}/health did not answer; check the URL and that the API is uploaded.")
+    conn = connect_db(db_path)
+    total = conn.execute("SELECT COUNT(*) FROM price_history WHERE id > ?", (after_id,)).fetchone()[0]
+    LOGGER.info("Uploading %s rows from %s to %s", total, db_path, REMOTE_STORE.base_url)
+    sent = inserted = 0
+    last_id = after_id
+    while True:
+        rows = conn.execute(
+            "SELECT id, date, brand, model, part, price, price_value, currency, url, status, error "
+            "FROM price_history WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        result = REMOTE_STORE.post_rows([dict(zip([c[0] for c in conn.execute("SELECT * FROM price_history LIMIT 0").description], row)) for row in rows])
+        sent += len(rows)
+        inserted += int(result.get("inserted") or 0)
+        last_id = rows[-1][0]
+        LOGGER.info("Uploaded %s/%s rows (%s new so far, last id %s)", sent, total, inserted, last_id)
+    conn.close()
+    status = REMOTE_STORE.status()
+    LOGGER.info("Done. Remote store now holds %s rows (latest %s)", status.get("count"), status.get("max_date"))
     return 0
 
 
@@ -1785,6 +1848,10 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--max-models", type=int)
     discover_parser.add_argument("--model", help="Only crawl models containing this text.")
     discover_parser.add_argument("--parallel", type=int, default=4, help="How many brand crawls run at the same time.")
+    push_parser = subparsers.add_parser("push-history", help="Upload the local SQLite history to the remote price store.")
+    push_parser.add_argument("--db", default="price_history.sqlite3", type=Path)
+    push_parser.add_argument("--batch", type=int, default=1000)
+    push_parser.add_argument("--after-id", type=int, default=0, help="Only upload rows with an id above this.")
     discover_parser.add_argument(
         "--cashify-city", default=DEFAULT_CASHIFY_CITY,
         help=f"City whose Cashify prices to read ({', '.join(sorted(CASHIFY_CITIES))}).",
@@ -1814,6 +1881,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if REMOTE_STORE is not None:
+        LOGGER.info("Prices are also being sent to %s", REMOTE_STORE.base_url)
     args = build_parser().parse_args(argv)
     if args.command == "run":
         return asyncio.run(run_tracker(args.config))
@@ -1831,6 +1900,8 @@ def main(argv: list[str] | None = None) -> int:
         plot_history(args.db, args.output, args.brand, args.model, args.part)
         LOGGER.info("Wrote %s", args.output)
         return 0
+    if args.command == "push-history":
+        return push_history(args.db, args.batch, args.after_id)
     if args.command == "discover-all":
         return asyncio.run(
             discover_all(

@@ -127,6 +127,17 @@ Cashify discovery visits every series tab on a brand page (the page itself only 
 
 Cashify prices depend on the city. Discovery reads them for Chennai by default; pass `--cashify-city gurgaon` for Gurgaon. To add another city, pick it on cashify.in, copy the values from the `_cs__city-info__v1` cookie into `CASHIFY_CITIES` in `spareprice.py`.
 
+## Store Data on Hostinger
+
+Render's disk is wiped on every deploy, so by default the scraped prices only
+survive if `price_history.sqlite3` is committed. The `hostinger_api/` folder
+is a small PHP + MySQL API for Hostinger Business (or any PHP host) that keeps
+the data instead. With `PRICE_API_URL` and `PRICE_API_KEY` set, the scraper
+sends every row there as it goes and the dashboard reads from there.
+
+See [hostinger_api/README.md](hostinger_api/README.md) for the setup, and
+run `python spareprice.py push-history` once to upload the existing history.
+
 ## Vercel Deployment
 
 This project is ready to deploy as a Flask app on Vercel. Vercel uses `pyproject.toml` and this configured entrypoint:

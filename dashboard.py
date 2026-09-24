@@ -19,6 +19,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
+
+from price_store import RemotePriceStore
 from markupsafe import Markup
 
 
@@ -26,6 +28,9 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "price_history.sqlite3"
 DEFAULT_CONFIG = ROOT / "config.json"
 HOSTED_READ_ONLY = bool(os.environ.get("VERCEL"))
+# When PRICE_API_URL / PRICE_API_KEY are set, prices are read from the remote
+# store (hostinger_api/) instead of the local SQLite file.
+REMOTE_STORE = RemotePriceStore.from_env()
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Kolkata")
 SUPPORTED_BRANDS = [
     "Apple", "Asus", "Google", "Honor", "Infinix", "iQOO", "Mi", "Motorola",
@@ -423,24 +428,42 @@ def load_price_data() -> dict[str, Any]:
     Building this is the expensive part of a page load (seconds of CPU on a
     small hosted instance), so it is kept until the database file changes.
     Callers must treat the returned lists and rows as read-only."""
-    path = db_path()
-    try:
-        info = path.stat()
-        stamp = (str(path), info.st_mtime_ns, info.st_size)
-    except OSError:
-        stamp = (str(path), 0, 0)
+    stamp: tuple[Any, ...]
+    if REMOTE_STORE is not None:
+        try:
+            remote = REMOTE_STORE.status()
+            stamp = ("remote", REMOTE_STORE.base_url, remote.get("count"), remote.get("max_id"))
+        except Exception as exc:
+            app.logger.warning("Remote price store %s is unreachable: %s", REMOTE_STORE.base_url, exc)
+            if _PRICE_DATA.get("stamp") is not None:
+                return _PRICE_DATA  # keep showing what we have
+            stamp = ("remote-unavailable",)
+    else:
+        path = db_path()
+        try:
+            info = path.stat()
+            stamp = (str(path), info.st_mtime_ns, info.st_size)
+        except OSError:
+            stamp = (str(path), 0, 0)
     with _PRICE_DATA_LOCK:
         if _PRICE_DATA.get("stamp") == stamp:
             return _PRICE_DATA
-        conn = connect()
-        rows = conn.execute(
-            """
-            SELECT date, brand, model, part, price, price_value, currency, status, error, url
-            FROM price_history
-            ORDER BY date DESC
-            """
-        ).fetchall()
-        conn.close()
+        rows: list[Any]
+        if REMOTE_STORE is not None and stamp[0] == "remote":
+            rows = REMOTE_STORE.fetch_all()
+            rows.sort(key=lambda r: r.get("date") or "", reverse=True)
+        elif REMOTE_STORE is not None:
+            rows = []
+        else:
+            conn = connect()
+            rows = conn.execute(
+                """
+                SELECT date, brand, model, part, price, price_value, currency, status, error, url
+                FROM price_history
+                ORDER BY date DESC
+                """
+            ).fetchall()
+            conn.close()
 
         latest_by_key: dict[tuple[str, str, str], sqlite3.Row] = {}
         for row in reversed(rows):
@@ -587,6 +610,7 @@ def load_dashboard(
         },
         "job": current_job_state(),
         "hosted_read_only": HOSTED_READ_ONLY,
+        "data_source": REMOTE_STORE.base_url if REMOTE_STORE is not None else str(db_path().name),
     }
 
 

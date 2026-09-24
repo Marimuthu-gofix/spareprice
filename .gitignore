@@ -5,3 +5,5 @@ venv/
 node_modules/
 brand_smoke_*.sqlite3
 backups/
+hostinger_api/config.php
+hostinger_api/*.sqlite3
