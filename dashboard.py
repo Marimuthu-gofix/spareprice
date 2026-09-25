@@ -60,14 +60,18 @@ job_state: dict[str, Any] = {
 }
 
 
+_DB_COPY_LOCK = threading.Lock()
+
+
 def db_path() -> Path:
     configured = app.config.get("DB_PATH") or os.environ.get("DB_PATH")
     if not configured:
         return DEFAULT_DB
     path = Path(configured)
-    if not path.exists() and DEFAULT_DB.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(DEFAULT_DB, path)
+    with _DB_COPY_LOCK:
+        if not path.exists() and DEFAULT_DB.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(DEFAULT_DB, path)
     return path
 
 
@@ -219,18 +223,21 @@ def model_key(model: str | None, loose: bool = False) -> str:
     return key
 
 
-@lru_cache(maxsize=None)
-def _search_text(brand: str, model: str, part: str, price: str, extra: tuple[str, ...]) -> str:
-    return clean_text(" ".join([brand, model, part, price, model_key(model), *extra]))
-
-
 def search_text(row: Any, *extra: str) -> str:
     """Text a search needle is matched against: the raw fields plus the
     canonical model name, so "iPhone SE (3rd generation)" also finds
-    Cashify's "Apple iPhone SE 2022"."""
-    return _search_text(
-        str(row["brand"] or ""), str(row["model"] or ""), str(row["part"] or ""), str(row["price"] or ""),
-        tuple(str(item) for item in extra),
+    Cashify's "Apple iPhone SE 2022".
+
+    Built from the per-field caches rather than cached per row: a per-row
+    cache grew by one entry for every row in the history on the first search
+    and never shrank.
+    """
+    model = str(row["model"] or "")
+    return " ".join(
+        [
+            clean_text(str(row["brand"] or "")), clean_text(model), clean_text(str(row["part"] or "")),
+            clean_text(str(row["price"] or "")), model_key(model), *(clean_text(str(item)) for item in extra),
+        ]
     )
 
 
@@ -417,6 +424,45 @@ def page_info(total: int, page: int, per_page: int, window: int = 2) -> dict[str
     }
 
 
+PRICE_COLUMNS = ("date", "brand", "model", "part", "price", "price_value", "currency", "status", "error", "url")
+
+
+class PriceRow:
+    """One price observation held in memory.
+
+    The dashboard keeps every row of history in memory (tens of thousands of
+    them), so each row is stored in fixed slots instead of a dict, and text
+    that repeats across rows (brand, model, part, url, ...) is shared through
+    `intern`. That is roughly a third of the memory of dict rows.
+    """
+
+    __slots__ = PRICE_COLUMNS
+
+    def __init__(self, source: Any, intern: dict[str, str]) -> None:
+        for column in PRICE_COLUMNS:
+            value = source[column]
+            if isinstance(value, str) and column != "date":
+                value = intern.setdefault(value, value)
+            setattr(self, column, value)
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key) from None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def keys(self) -> tuple[str, ...]:
+        return PRICE_COLUMNS
+
+
+def compact_rows(source_rows: list[Any]) -> list[PriceRow]:
+    intern: dict[str, str] = {}
+    return [PriceRow(row, intern) for row in source_rows]
+
+
 _PRICE_DATA_LOCK = threading.Lock()
 _PRICE_DATA: dict[str, Any] = {"stamp": None}
 
@@ -456,25 +502,27 @@ def load_price_data() -> dict[str, Any]:
         if _PRICE_DATA.get("stamp") == stamp:
             _PRICE_DATA["remote_error"] = remote_error
             return _PRICE_DATA
-        rows: list[Any]
+        rows: list[PriceRow]
         if stamp[0] == "remote":
-            rows = REMOTE_STORE.fetch_all()  # type: ignore[union-attr]
-            rows.sort(key=lambda r: r.get("date") or "", reverse=True)
+            rows = compact_rows(REMOTE_STORE.fetch_all())  # type: ignore[union-attr]
+            rows.sort(key=lambda r: r.date or "", reverse=True)
         else:
             conn = connect()
-            rows = conn.execute(
-                """
-                SELECT date, brand, model, part, price, price_value, currency, status, error, url
-                FROM price_history
-                ORDER BY date DESC
-                """
-            ).fetchall()
+            rows = compact_rows(
+                conn.execute(
+                    """
+                    SELECT date, brand, model, part, price, price_value, currency, status, error, url
+                    FROM price_history
+                    ORDER BY date DESC
+                    """
+                ).fetchall()
+            )
             conn.close()
 
-        latest_by_key: dict[tuple[str, str, str], sqlite3.Row] = {}
+        latest_by_key: dict[tuple[str, str, str], PriceRow] = {}
         for row in reversed(rows):
-            if row["status"] == "ok":
-                latest_by_key[(row["brand"], row["model"], row["part"])] = row
+            if row.status == "ok":
+                latest_by_key[(row.brand, row.model, row.part)] = row
 
         latest = [dict(row) for row in latest_by_key.values()]
         attach_competitor_prices(latest)
@@ -1010,9 +1058,25 @@ def start_job(job_type: str, brand: str = "all", model: str = "") -> bool:
     return True
 
 
+def scrape_parallelism() -> str:
+    """How many brand crawls a dashboard-started scrape runs at once.
+
+    Each crawl is a browser page, and on Render's small instances several
+    browsers at once exceed the memory limit, so hosted runs default to one.
+    Override with SCRAPE_PARALLEL.
+    """
+    configured = (os.environ.get("SCRAPE_PARALLEL") or "").strip()
+    if configured.isdigit() and int(configured) > 0:
+        return configured
+    return "1" if os.environ.get("RENDER") else "4"
+
+
 def run_tracker_command(job_type: str, brand: str = "all", model: str = "") -> None:
     if job_type == "catalog":
-        command = [sys.executable, str(ROOT / "spareprice.py"), "discover-all", "--brand", brand, "--delay", "1"]
+        command = [
+            sys.executable, str(ROOT / "spareprice.py"), "discover-all",
+            "--brand", brand, "--delay", "1", "--parallel", scrape_parallelism(),
+        ]
         if model:
             command.extend(["--model", model])
     else:
