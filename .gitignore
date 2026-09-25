@@ -10,3 +10,4 @@ hostinger_api/*.sqlite3
 price_history.sqlite3
 price_history.csv
 *.sqlite3
+.cashify_token.json

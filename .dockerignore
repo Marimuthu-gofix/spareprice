@@ -13,3 +13,4 @@ __pycache__/
 .pytest_cache/
 customer_api/
 hostinger_api/
+.cashify_token.json

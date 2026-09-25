@@ -285,7 +285,7 @@ def part_category(part: str | None) -> str | None:
     def has(*words: str) -> bool:
         return any(word in name for word in words)
 
-    if has("cable", "adapter", "charger", "headset", "cleaning", "s pen", "sim tray", "component repair"):
+    if has("cable", "adapter", "charger", "headset", "cleaning", "s pen", "sim tray", "component repair", "inspection"):
         return None
     if "camera" in name:
         return "Front Camera" if "front" in name else "Back Camera"
@@ -307,7 +307,7 @@ def part_category(part: str | None) -> str | None:
         return "Cover Screen"
     if has("screen", "display", "lcd", "lcm", "touch panel"):
         return "Screen"
-    if has("back cover", "back glass", "battery cover", "backcover", "rear cover", "rear glass"):
+    if has("back cover", "back glass", "battery cover", "backcover", "rear cover", "rear glass", "back panel"):
         return "Back Cover"
     if has("battery"):
         return "Battery"
@@ -427,6 +427,14 @@ def page_info(total: int, page: int, per_page: int, window: int = 2) -> dict[str
 PRICE_COLUMNS = ("date", "brand", "model", "part", "price", "price_value", "currency", "status", "error", "url")
 
 
+# Older Cashify rows used names the site API now reports differently. Fold
+# them together at load time so one part does not show up twice.
+LEGACY_PART_NAMES = {
+    "Cashify - Motherboard": "Cashify - Motherboard Inspection",
+    "Cashify - BACK PANEL": "Cashify - Back Panel",
+}
+
+
 class PriceRow:
     """One price observation held in memory.
 
@@ -441,6 +449,8 @@ class PriceRow:
     def __init__(self, source: Any, intern: dict[str, str]) -> None:
         for column in PRICE_COLUMNS:
             value = source[column]
+            if column == "part":
+                value = LEGACY_PART_NAMES.get(value, value)
             if isinstance(value, str) and column != "date":
                 value = intern.setdefault(value, value)
             setattr(self, column, value)
@@ -739,6 +749,22 @@ def build_active_filters(filters: dict[str, Any]) -> list[dict[str, str]]:
         label = "Available" if filters["status"] == "ok" else "Error"
         active.append({"label": label, "remove_url": url_for("index", **build_query(filters, status="", page=1))})
     return active
+
+
+def release_price_data() -> None:
+    """Drop the in-memory price data so a scrape has room to run.
+
+    Only on small hosts (Render sets RENDER=true): the data is rebuilt from
+    the store on the next page view, which costs a few seconds once.
+    """
+    if not os.environ.get("RENDER"):
+        return
+    import gc
+
+    with _PRICE_DATA_LOCK:
+        _PRICE_DATA.clear()
+        _PRICE_DATA["stamp"] = None
+    gc.collect()
 
 
 def warm_price_data() -> None:
@@ -1053,6 +1079,7 @@ def start_job(job_type: str, brand: str = "all", model: str = "") -> bool:
                 },
             }
         )
+    release_price_data()
     thread = threading.Thread(target=run_tracker_command, args=(job_type, brand, model), daemon=True)
     thread.start()
     return True

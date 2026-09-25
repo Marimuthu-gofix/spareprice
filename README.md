@@ -123,7 +123,17 @@ Brand crawls run side by side, four at a time by default, because each one talks
 python spareprice.py discover-all --brand all --delay 2 --parallel 6
 ```
 
-Cashify discovery visits every series tab on a brand page (the page itself only shows a popular subset) and opens each model's quote page directly, so a full brand takes a few minutes rather than twenty.
+Cashify discovery uses the site's own JSON API: one page load captures the
+bearer token the site's scripts send (cached in `.cashify_token.json` for the
+hour it stays valid), then every model list and price is a small JSON call.
+No browser page is rendered per model, so a full brand takes about two
+minutes and the whole run needs about 60 MB. If the API ever changes, the
+crawler falls back to driving the pages as before.
+
+On small hosts (Render sets `RENDER=true`) the browser is launched with a
+lighter set of flags, dashboard-started scrapes run one site at a time, and
+the dashboard drops its in-memory data while a scrape runs. `SCRAPE_PARALLEL`
+and `SCRAPE_LOW_MEMORY` override these anywhere.
 
 Cashify prices depend on the city. Discovery reads them for Chennai by default; pass `--cashify-city gurgaon` for Gurgaon. To add another city, pick it on cashify.in, copy the values from the `_cs__city-info__v1` cookie into `CASHIFY_CITIES` in `spareprice.py`.
 

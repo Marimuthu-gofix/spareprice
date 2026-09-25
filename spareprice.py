@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import csv
 import json
 import logging
@@ -9,6 +10,8 @@ import os
 import re
 import sqlite3
 import sys
+import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -123,8 +126,30 @@ def default_db_path(fallback: str | Path) -> Path:
     return Path(os.environ.get("DB_PATH") or fallback)
 
 
+def low_memory_mode() -> bool:
+    """True on small hosts (Render sets RENDER=true) or when SCRAPE_LOW_MEMORY is set."""
+    return bool(os.environ.get("SCRAPE_LOW_MEMORY") or os.environ.get("RENDER"))
+
+
 def browser_launch_args() -> list[str]:
-    return ["--no-sandbox", "--disable-dev-shm-usage"]
+    args = ["--no-sandbox", "--disable-dev-shm-usage"]
+    if low_memory_mode():
+        # Trade speed and isolation for a much smaller footprint: one browser
+        # process instead of one per site, no GPU, no extras. Needed to fit a
+        # crawl next to the dashboard in a 512 MB instance.
+        args += [
+            "--no-zygote",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-extensions",
+            "--disable-default-apps",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-features=IsolateOrigins,site-per-process,TranslateUI,MediaRouter",
+            "--mute-audio",
+            "--no-first-run",
+        ]
+    return args
 
 
 # Requests the catalog crawlers never need. Skipping them makes every page
@@ -133,6 +158,11 @@ BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
 BLOCKED_URL_FRAGMENTS = (
     "google-analytics.", "googletagmanager.", "doubleclick.", "facebook.", "hotjar.", "clarity.ms",
     "moengage", "webengage", "clevertap", "branch.io", "appsflyer", "newrelic", "sentry.io",
+    "googlesyndication.", "adservice.", "googleadservices.", "criteo.", "taboola.", "outbrain.",
+    "freshchat", "freshworks", "intercom", "zendesk", "tawk.to", "livechat", "onesignal", "pushengage",
+    "amplitude.", "mixpanel.", "segment.io", "segment.com", "optimizely.", "fullstory.", "smartlook",
+    "youtube.", "ytimg.", "vimeo.", "twitter.", "x.com/", "linkedin.", "pinterest.", "tiktok.", "snapchat.",
+    "bing.com/bat", "bat.bing", "recaptcha", "gstatic.com/recaptcha", "firebase", "kissmetrics", "quantserve",
 )
 
 
@@ -347,33 +377,62 @@ async def discover_all(
     from playwright.async_api import async_playwright
 
     conn = connect_db(db_path or default_db_path("price_history.sqlite3"))
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, args=browser_launch_args())
-        context = await new_crawl_context(browser)
-        await context.add_cookies(cashify_city_cookies(cashify_city))
+    city_cookies = cashify_city_cookies(cashify_city)
+    # Playwright (a node process) and the browser are started only when a
+    # crawler needs them: Cashify runs through the site API and usually needs
+    # neither, which keeps a Cashify-only run to a few tens of megabytes.
+    launched: dict[str, Any] = {}
+    launch_lock = asyncio.Lock()
+    try:
+
+        async def get_browser() -> Any:
+            async with launch_lock:
+                if "browser" not in launched:
+                    launched["playwright"] = await async_playwright().start()
+                    launched["browser"] = await launched["playwright"].chromium.launch(
+                        headless=True, args=browser_launch_args()
+                    )
+                    launched["context"] = await new_crawl_context(launched["browser"])
+                    await launched["context"].add_cookies(city_cookies)
+            return launched["browser"]
+
+        async def get_context() -> Any:
+            await get_browser()
+            return launched["context"]
+
+        def with_context(crawler: Callable[..., Awaitable[None]], *args: Any) -> Callable[[], Awaitable[None]]:
+            async def run() -> None:
+                await crawler(await get_context(), *args)
+            return run
+
+        def with_browser(crawler: Callable[..., Awaitable[None]], *args: Any) -> Callable[[], Awaitable[None]]:
+            async def run() -> None:
+                await crawler(await get_browser(), *args)
+            return run
+
         # Each brand crawler talks to a different website, so they run side by
         # side (up to `parallel` at once) without hitting any one site harder.
         jobs: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         if brand in {"all", "apple"}:
-            jobs.append(("Apple", lambda: discover_apple(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("Apple", with_context(discover_apple, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "samsung"}:
-            jobs.append(("Samsung", lambda: discover_samsung(browser, conn, delay_seconds, max_models, samsung_series, model_filter)))
+            jobs.append(("Samsung", with_browser(discover_samsung, conn, delay_seconds, max_models, samsung_series, model_filter)))
         if brand in {"all", "oppo"}:
-            jobs.append(("OPPO", lambda: discover_oppo(browser, conn, delay_seconds, max_models, oppo_series, model_filter)))
+            jobs.append(("OPPO", with_browser(discover_oppo, conn, delay_seconds, max_models, oppo_series, model_filter)))
         if brand in {"all", "realme"}:
-            jobs.append(("realme", lambda: discover_realme(browser, conn, delay_seconds, max_models, realme_series, model_filter)))
+            jobs.append(("realme", with_browser(discover_realme, conn, delay_seconds, max_models, realme_series, model_filter)))
         if brand in {"all", "oneplus"}:
-            jobs.append(("OnePlus", lambda: discover_oneplus(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("OnePlus", with_context(discover_oneplus, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "mi"}:
-            jobs.append(("Mi", lambda: discover_mi(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("Mi", with_context(discover_mi, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "vivo"}:
-            jobs.append(("vivo", lambda: discover_vivo(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("vivo", with_context(discover_vivo, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "iqoo"}:
-            jobs.append(("iQOO", lambda: discover_iqoo(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("iQOO", with_context(discover_iqoo, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "motorola"}:
-            jobs.append(("Motorola", lambda: discover_motorola(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("Motorola", with_context(discover_motorola, conn, delay_seconds, max_models, model_filter)))
         if brand in {"all", "cashify"}:
-            jobs.append(("Cashify", lambda: discover_cashify(context, conn, delay_seconds, max_models, model_filter)))
+            jobs.append(("Cashify", lambda: discover_cashify(get_context, conn, delay_seconds, max_models, model_filter)))
 
         semaphore = asyncio.Semaphore(max(1, parallel))
 
@@ -388,8 +447,12 @@ async def discover_all(
 
         LOGGER.info("Running %s catalog crawls, up to %s at a time", len(jobs), max(1, parallel))
         await asyncio.gather(*(run_job(name, job) for name, job in jobs))
-        await context.close()
-        await browser.close()
+    finally:
+        if "context" in launched:
+            await launched["context"].close()
+            await launched["browser"].close()
+        if "playwright" in launched:
+            await launched["playwright"].stop()
     conn.close()
     flush_remote_store()
     return 0
@@ -977,7 +1040,254 @@ async def discover_motorola(
         await page.close()
 
 
+CASHIFY_API = "https://www.cashify.in/api"
+CASHIFY_SERVICE_ACRONYMS = {"LCD", "OLED", "AMOLED", "USB", "SIM", "5G", "4G", "IMEI"}
+CASHIFY_SERVICE_RENAMES = {"motherboard inspection charges": "Motherboard Inspection"}
+
+
+def cashify_service_name(raw: str) -> str:
+    """"CHARGING JACK" -> "Charging Jack", matching how the site shows it."""
+    cleaned = normalize_space(raw or "")
+    renamed = CASHIFY_SERVICE_RENAMES.get(cleaned.lower())
+    if renamed:
+        return renamed
+    words = []
+    for word in cleaned.split(" "):
+        bare = word.strip("()")
+        if bare.upper() in CASHIFY_SERVICE_ACRONYMS:
+            words.append(word.upper())
+            continue
+        index = next((i for i, ch in enumerate(word) if ch.isalpha()), None)
+        words.append(word if index is None else word[:index] + word[index].upper() + word[index + 1:].lower())
+    return " ".join(words)
+
+
+CASHIFY_TOKEN_FILE = Path(__file__).with_name(".cashify_token.json")
+CASHIFY_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+
+
+def _http_json(method: str, url: str, body: dict[str, Any] | None, headers: dict[str, str]) -> Any:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, method=method, headers={"user-agent": CASHIFY_USER_AGENT, **headers})
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise PermissionError("Cashify API token was rejected") from exc
+        raise ValueError(f"{method} {url} failed with HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:200]}") from exc
+
+
+async def cashify_api_post(path: str, body: dict[str, Any], token: str | None) -> Any:
+    """Plain HTTP call to Cashify's JSON API, off the event loop thread."""
+    headers = {"content-type": "application/json", "accept": "application/json", "x-app-installer": "cashify"}
+    if token:
+        headers["x-authorization"] = token
+    return await asyncio.to_thread(_http_json, "POST", f"{CASHIFY_API}/{path}", body, headers)
+
+
+def cashify_token_expiry(token: str) -> float:
+    """Unix time the bearer token expires, or 0 if it cannot be read."""
+    try:
+        payload = token.replace("Bearer ", "").split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload)).get("exp") or 0)
+    except Exception:
+        return 0.0
+
+
+def load_cached_cashify_token() -> str | None:
+    try:
+        saved = json.loads(CASHIFY_TOKEN_FILE.read_text(encoding="utf-8"))
+        token = str(saved.get("token") or "")
+    except Exception:
+        return None
+    if token and cashify_token_expiry(token) - time.time() > 600:
+        return token
+    return None
+
+
+def save_cached_cashify_token(token: str) -> None:
+    try:
+        CASHIFY_TOKEN_FILE.write_text(json.dumps({"token": token, "exp": cashify_token_expiry(token)}), encoding="utf-8")
+    except OSError:
+        LOGGER.debug("Could not cache the Cashify token", exc_info=True)
+
+
+async def cashify_capture_token(get_context: Callable[[], Awaitable[Any]]) -> str | None:
+    """Load one Cashify page in the browser and take the bearer token its own
+    scripts send. Cached to disk so most runs need no browser at all."""
+    context = await get_context()
+    page = await context.new_page()
+    token: dict[str, str] = {}
+
+    def on_request(request: Any) -> None:
+        value = request.headers.get("x-authorization")
+        if value and "/api/" in request.url:
+            token.setdefault("value", value)
+
+    page.on("request", on_request)
+    try:
+        await goto_catalog_page(page, CASHIFY_REPAIR_URL)
+        for _ in range(10):
+            if token:
+                break
+            await page.wait_for_timeout(500)
+    finally:
+        await page.close()
+    if token.get("value"):
+        save_cached_cashify_token(token["value"])
+        expires = cashify_token_expiry(token["value"])
+        if expires:
+            LOGGER.info("Cashify API token captured, valid for %.0f hours", max(0.0, expires - time.time()) / 3600)
+    return token.get("value")
+
+
+def cashify_brand_urls_from_html() -> list[str]:
+    """Brand pages linked from the repair landing page, read from plain HTML."""
+    request = urllib.request.Request(CASHIFY_REPAIR_URL, headers={"user-agent": CASHIFY_USER_AGENT})
+    with urllib.request.urlopen(request, timeout=45) as response:
+        html = response.read().decode("utf-8", "replace")
+    slugs = sorted(set(re.findall(r'href="/repair/([a-z0-9-]+)"', html)))
+    return [f"https://www.cashify.in/repair/{slug}" for slug in slugs]
+
+
+async def cashify_list_models(seo: str, token: str) -> list[dict[str, Any]]:
+    """Every model on a Cashify brand page, including the ones behind the
+    series tabs, with the ids needed to price them."""
+    models: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        body = {
+            "serid": 1, "souid": 1, "plid": 20, "bid": None, "pcid": None, "ps": 500, "os": offset,
+            "pin": ACTIVE_CASHIFY_CITY["dp"], "regid": ACTIVE_CASHIFY_CITY["ri"], "fid": None, "pid": None, "seo": seo,
+        }
+        data = await cashify_api_post(f"pd01/v1/product-search-template?key=sp_parent_product&seo={quote(seo, safe='')}", body, token)
+        items = data.get("dt") or []
+        image_base = str(data.get("piu") or "")
+        for item in items:
+            colours = ((item.get("specs") or {}).get("color")) or []
+            first = colours[0] if colours and isinstance(colours[0], dict) else {}
+            if not item.get("pi") or not item.get("bid") or not first.get("id"):
+                continue
+            models.append({
+                "bid": item["bid"], "bn": item.get("bn") or "", "pid": item["pi"], "plid": item.get("pli") or 20,
+                "pn": normalize_space(str(item.get("pn") or "")), "pcid": first["id"], "pcn": first.get("dval") or "",
+                "cdn": image_base, "in": item.get("pin") or "",
+            })
+        offset += len(items)
+        if not items or offset >= int(data.get("hits") or 0):
+            return models
+
+
+async def cashify_model_prices(entry: dict[str, Any], token: str | None) -> list[dict[str, Any]]:
+    body = {
+        "plid": entry["plid"], "bid": entry["bid"], "pid": entry["pid"], "pcid": entry["pcid"],
+        "ri": ACTIVE_CASHIFY_CITY["ri"], "pin": ACTIVE_CASHIFY_CITY["dp"],
+    }
+    data = await cashify_api_post("sp01/v3/services-available", body, token)
+    rows = []
+    for item in data.get("dt") or []:
+        name = cashify_service_name(str(item.get("stn") or ""))
+        price = coerce_price_value(item.get("cp"))
+        if name and price is not None:
+            rows.append({"part": f"Cashify - {name}", "price_value": price, "currency": "INR"})
+    return rows
+
+
+def cashify_brands_for_filter(brand_urls: list[str], model_filter: str | None) -> list[str]:
+    """Only the brand pages a model filter can match ("iPhone 17e" -> Apple)."""
+    if not model_filter:
+        return brand_urls
+    requested = model_filter.lower()
+    wanted = {cashify_brand_name(str(url)).lower() for url in brand_urls if cashify_brand_name(str(url)).lower() in requested}
+    for keyword, hinted in CASHIFY_MODEL_BRAND_HINTS.items():
+        if keyword in requested:
+            wanted.add(hinted)
+    matching = [url for url in brand_urls if cashify_brand_name(str(url)).lower() in wanted]
+    if matching:
+        LOGGER.info("Cashify brands matching %r: %s", model_filter, ", ".join(sorted(wanted)))
+    return matching or brand_urls
+
+
 async def discover_cashify(
+    get_context: Callable[[], Awaitable[Any]],
+    conn: sqlite3.Connection,
+    delay_seconds: float,
+    max_models: int | None,
+    model_filter: str | None = None,
+) -> None:
+    """Cashify prices through the site's own JSON API.
+
+    Every model list and price is a small JSON call, so no browser page is
+    rendered per model: a full Cashify crawl takes a few minutes and a few
+    tens of megabytes. The only thing that needs a browser is the bearer
+    token the site's scripts send, captured from one page load and cached
+    on disk until it expires. Falls back to driving the pages if the API
+    changes.
+    """
+    token = load_cached_cashify_token()
+    if token:
+        LOGGER.info("Using the cached Cashify API token")
+    else:
+        try:
+            token = await cashify_capture_token(get_context)
+        except Exception:
+            LOGGER.exception("Could not load Cashify to capture its API token")
+            token = None
+    if not token:
+        LOGGER.warning("Cashify API token not found; falling back to page-driven discovery")
+        await discover_cashify_browser(await get_context(), conn, delay_seconds, max_models, model_filter)
+        return
+    LOGGER.info("Cashify prices are being read for pincode %s via the site API", ACTIVE_CASHIFY_CITY["dp"])
+    try:
+        brand_urls = await asyncio.to_thread(cashify_brand_urls_from_html)
+    except Exception:
+        LOGGER.exception("Could not read Cashify's brand list")
+        brand_urls = []
+    brand_urls = cashify_brands_for_filter(brand_urls, model_filter)
+    LOGGER.info("Cashify repair brands found: %s", len(brand_urls))
+    count = 0
+    for brand_url in brand_urls:
+        cashify_brand = cashify_brand_name(brand_url)
+        exact_brand_filter = bool(model_filter and model_filter.strip().lower() == cashify_brand.lower())
+        seo = "/repair/" + brand_url.rstrip("/").rsplit("/", 1)[-1]
+        try:
+            models = await cashify_list_models(seo, token)
+        except PermissionError:
+            LOGGER.info("Cashify API token was rejected; capturing a fresh one")
+            token = await cashify_capture_token(get_context)
+            if not token:
+                LOGGER.warning("Cashify API token expired and could not be renewed; stopping")
+                return
+            models = await cashify_list_models(seo, token)
+        except Exception as exc:
+            LOGGER.exception("Cashify model list failed for %s", cashify_brand)
+            save_catalog_error(conn, cashify_brand, f"Cashify {cashify_brand}", brand_url, f"{type(exc).__name__}: {exc}")
+            continue
+        LOGGER.info("Cashify %s mobile models found: %s", cashify_brand, len(models))
+        for entry in models:
+            model_name = entry["pn"]
+            if not model_name or (not exact_brand_filter and not model_matches_filter(model_name, model_filter)):
+                continue
+            if max_models is not None and count >= max_models:
+                return
+            quote_url = cashify_quote_url(entry)
+            try:
+                rows = await cashify_model_prices(entry, token)
+                saved = save_structured_price_rows(conn, cashify_brand, model_name, quote_url, rows)
+                if not saved:
+                    LOGGER.info("Cashify has no published repair-service prices for %s", model_name)
+                    continue
+                count += 1
+                LOGGER.info("Discovered Cashify %s %s (%s rows, %s/%s)", cashify_brand, model_name, saved, count, max_models or "all")
+                await asyncio.sleep(delay_seconds)
+            except Exception as exc:
+                LOGGER.exception("Cashify model discovery failed: %s", model_name)
+                save_catalog_error(conn, cashify_brand, f"Cashify {model_name}", quote_url, f"{type(exc).__name__}: {exc}")
+
+
+async def discover_cashify_browser(
     context: Any,
     conn: sqlite3.Connection,
     delay_seconds: float,
@@ -1013,7 +1323,13 @@ async def discover_cashify(
                 LOGGER.info("Cashify brands matching %r: %s", model_filter, ", ".join(sorted(wanted_brands)))
                 brand_urls = matching_brands
         LOGGER.info("Cashify repair brands found: %s", len(brand_urls))
-        for brand_url in brand_urls:
+        for brand_index, brand_url in enumerate(brand_urls):
+            if brand_index:
+                # A fresh page per brand keeps renderer memory from creeping up
+                # over a long crawl.
+                await page.close()
+                page = await context.new_page()
+                page.set_default_timeout(45000)
             cashify_brand = cashify_brand_name(str(brand_url))
             exact_brand_filter = bool(model_filter and model_filter.strip().lower() == cashify_brand.lower())
             # FRAGILE SITE ASSUMPTION: the brand page first shows only a
@@ -1100,12 +1416,17 @@ async def discover_cashify(
         await page.close()
 
 
+ACTIVE_CASHIFY_CITY: dict[str, Any] = dict(CASHIFY_CITIES[DEFAULT_CASHIFY_CITY])
+
+
 def cashify_city_cookies(city: str) -> list[dict[str, Any]]:
     """Cookies that make Cashify quote prices for the requested city."""
     key = normalize_space(city or "").lower()
     if key not in CASHIFY_CITIES:
         raise SystemExit(f"Unknown Cashify city {city!r}; choose from: {', '.join(sorted(CASHIFY_CITIES))}")
     info = CASHIFY_CITIES[key]
+    ACTIVE_CASHIFY_CITY.clear()
+    ACTIVE_CASHIFY_CITY.update(info)
     city_info = {
         "ri": info["ri"], "rn": info["rn"], "dp": info["dp"], "isp": "1", "xmd": 1, "cs": [1],
         "pt": ["csh"], "rcy": 1, "seo": info["seo"], "id": False,
