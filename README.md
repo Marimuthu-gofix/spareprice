@@ -4,6 +4,13 @@ Small, configurable price tracker for mobile spare-part repair prices across App
 
 It uses Playwright because the referenced pages populate prices after JavaScript-driven selection flows or through browser-loaded APIs. Keep the run frequency low and use this for personal tracking only; these sites may restrict automated access in their terms.
 
+## Node.js Edition
+
+The `nodejs/` folder holds a complete port of this project to Node.js: the
+same scraper (Playwright) and the same dashboard (Express), reading and
+writing the same data. See [nodejs/README.md](nodejs/README.md). Either
+edition can be used; they do not need each other.
+
 ## Install
 
 ```powershell

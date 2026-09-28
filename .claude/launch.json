@@ -6,6 +6,18 @@
       "runtimeExecutable": "D:\\spareprice\\.venv\\Scripts\\python.exe",
       "runtimeArgs": ["dashboard.py"],
       "port": 5000
+    },
+    {
+      "name": "gofix-customer-api",
+      "runtimeExecutable": "D:\\spareprice\\customer_api\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "--app-dir", "D:\\spareprice\\customer_api", "main:app", "--port", "9010"],
+      "port": 9010
+    },
+    {
+      "name": "spareprice-node-dashboard",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["D:\\spareprice\\nodejs\\src\\dashboard\\server.js", "--port", "5001"],
+      "port": 5001
     }
   ]
 }
