@@ -1,0 +1,90 @@
+# Weekly full scrape on GitHub's machines (free), posting every price to the
+# Hostinger store. Nothing is kept on the runner: the rows go to
+# PRICE_API_URL as they are scraped, exactly like the Render app does.
+#
+# Setup, once, on GitHub: repository > Settings > Secrets and variables >
+# Actions > New repository secret:
+#   PRICE_API_URL = https://scrape.gofix.info/api
+#   PRICE_API_KEY = the api_key from api/config.php on Hostinger
+#
+# Run it by hand any time: Actions tab > "Weekly full scrape" > Run workflow,
+# optionally for one brand or one model.
+name: Weekly full scrape
+
+on:
+  schedule:
+    # Every Sunday at 02:00 India time. GitHub's cron is in UTC: Saturday 20:30 UTC.
+    - cron: "30 20 * * 6"
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: "Brand to scrape"
+        type: choice
+        default: all
+        options: [all, apple, samsung, oppo, realme, oneplus, mi, vivo, iqoo, motorola, cashify]
+      model:
+        description: "Only models containing this text (optional)"
+        type: string
+        default: ""
+
+# Never run two scrapes at once; a second start waits for the first to finish.
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PRICE_API_URL: ${{ secrets.PRICE_API_URL }}
+      PRICE_API_KEY: ${{ secrets.PRICE_API_KEY }}
+      SCRAPE_BRAND: ${{ inputs.brand || 'all' }}
+      SCRAPE_MODEL: ${{ inputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the scraper and Chromium
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Check the price store is reachable
+        run: |
+          if [ -z "$PRICE_API_URL" ] || [ -z "$PRICE_API_KEY" ]; then
+            echo "::error::Add the PRICE_API_URL and PRICE_API_KEY secrets to this repository (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          curl -fsS "$PRICE_API_URL/health"
+          echo
+          curl -fsS -H "X-API-Key: $PRICE_API_KEY" "$PRICE_API_URL/status"
+          echo
+
+      - name: Scrape
+        run: |
+          args=(--brand "$SCRAPE_BRAND" --delay 1 --parallel 4 --db scrape.sqlite3)
+          if [ -n "$SCRAPE_MODEL" ]; then
+            args+=(--model "$SCRAPE_MODEL")
+          fi
+          echo "Running: spareprice.py discover-all ${args[*]}"
+          python spareprice.py discover-all "${args[@]}"
+
+      - name: Show what the store holds now
+        if: always()
+        run: curl -fsS -H "X-API-Key: $PRICE_API_KEY" "$PRICE_API_URL/status" || true
+
+      # A copy of this run's rows, kept two weeks, in case the store was down.
+      - name: Keep this run's rows as a backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-${{ github.run_id }}
+          path: scrape.sqlite3
+          retention-days: 14
+          if-no-files-found: ignore

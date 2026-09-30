@@ -1,0 +1,12 @@
+# Spareprice on Hostinger shared hosting (the contents of public_html).
+# The PHP dashboard is index.php; the price API keeps its own rules in api/.
+RewriteEngine On
+Options -Indexes
+
+# Routes the page script calls by path.
+RewriteRule ^job-status/?$ index.php?action=job-status [L,QSA]
+RewriteRule ^(check-now|discover-all|discover-scope|models\.json|export\.csv|export\.xlsx)/?$ index.php?action=$1 [L,QSA]
+
+# PHP includes, the cache, and leftovers of older uploads are not for the browser.
+RewriteRule ^(php|src|views|scripts|node_modules)(/|$) - [F,L]
+RewriteRule ^(package(-lock)?\.json|config\.json|README\.md|HOSTINGER\.md|Dockerfile|\.env.*|\.gitignore|\.dockerignore)$ - [F,L]

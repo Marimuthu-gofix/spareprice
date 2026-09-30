@@ -1,0 +1,30 @@
+SPAREPRICE PRICE API (PHP) - HOSTINGER SETUP
+============================================
+
+This folder is the PHP version of the price store API. Use it when the
+dashboard is NOT running as a Node.js web app on this domain (the Node app
+serves the same /api routes itself and does not need these files).
+
+1. In hPanel go to Databases > Management and create a MySQL database.
+   Note the database name, user name and password.
+
+2. In hPanel File Manager open public_html, create a folder named "api"
+   and put these files in it: index.php, .htaccess, config.example.php.
+   (.htaccess is hidden by default; enable "Show hidden files".)
+
+3. Copy config.example.php to config.php and fill in:
+      dsn       -> mysql:host=localhost;dbname=YOUR_DATABASE;charset=utf8mb4
+      user      -> your database user
+      password  -> your database password
+      api_key   -> a long random secret. Make one on your PC with:
+                   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   Never write the key in any other file in this folder.
+
+4. Open https://YOUR-DOMAIN/api/health in a browser. It must show
+      {"status":"ok"}
+
+5. In Render (and on any PC that scrapes) set:
+      PRICE_API_URL = https://YOUR-DOMAIN/api
+      PRICE_API_KEY = the same api_key as in config.php
+
+If the key ever leaks, change it in config.php and in Render.

@@ -4,12 +4,40 @@ Small, configurable price tracker for mobile spare-part repair prices across App
 
 It uses Playwright because the referenced pages populate prices after JavaScript-driven selection flows or through browser-loaded APIs. Keep the run frequency low and use this for personal tracking only; these sites may restrict automated access in their terms.
 
-## Node.js Edition
+## Weekly scrape on GitHub Actions (free)
 
-The `nodejs/` folder holds a complete port of this project to Node.js: the
-same scraper (Playwright) and the same dashboard (Express), reading and
-writing the same data. See [nodejs/README.md](nodejs/README.md). Either
-edition can be used; they do not need each other.
+`.github/workflows/scrape.yml` runs a full scrape of every brand on GitHub's
+own machines every Sunday at 02:00 India time and posts the prices to the
+Hostinger store, so no server of yours has to run Chromium. Setup, once:
+
+1. On GitHub open the repository > Settings > Secrets and variables >
+   Actions and add two secrets: `PRICE_API_URL`
+   (`https://scrape.gofix.info/api`) and `PRICE_API_KEY` (the `api_key` from
+   `api/config.php` on Hostinger).
+2. Push the workflow file. The first run happens on the next Sunday, or start
+   one now from the Actions tab > "Weekly full scrape" > Run workflow, where
+   you can also limit it to one brand or one model.
+
+Each run keeps its SQLite file as a downloadable backup for two weeks. GitHub
+pauses scheduled workflows when a repository has had no pushes for 60 days;
+pressing Run workflow once wakes it up again.
+
+## Local settings (.env)
+
+Copy `.env.example` to `.env` to keep `PRICE_API_URL` and `PRICE_API_KEY` on
+your PC. The file is read automatically by the dashboard and the scraper, is
+ignored by git and is never deployed. With it, the local dashboard shows the
+live data and every local scrape also updates the live store. Delete the file
+to work with the local SQLite file only.
+
+## Hostinger site (PHP)
+
+Hostinger shared hosting runs PHP, not Python. `hostinger_api/` is the price
+store API and `hostinger_site/` is a PHP edition of the dashboard for the
+site root, reading the same MySQL table. `python hostinger_site/make_zip.py`
+builds the zip to extract into `public_html`. See
+[hostinger_site/README.md](hostinger_site/README.md). Scraping always runs
+in Python: on Render, on GitHub Actions or on your PC.
 
 ## Install
 

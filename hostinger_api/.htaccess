@@ -11,3 +11,8 @@ RewriteRule ^ index.php [L]
 <Files "config.example.php">
     Require all denied
 </Files>
+
+# Notes and docs must never be downloadable either.
+<FilesMatch "\.(txt|md|example)$">
+    Require all denied
+</FilesMatch>

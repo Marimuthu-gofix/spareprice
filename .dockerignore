@@ -14,3 +14,5 @@ __pycache__/
 customer_api/
 hostinger_api/
 .cashify_token.json
+hostinger_site/
+.env

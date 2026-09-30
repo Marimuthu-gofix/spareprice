@@ -8,6 +8,9 @@ Configured with two environment variables:
 When they are not set, `RemotePriceStore.from_env()` returns None and the
 rest of the project keeps using the local SQLite file only.
 
+On a PC the two variables can live in a `.env` file next to this module
+(see `.env.example`); it is read when this module is imported.
+
 The scraper calls `add()` for every saved row. Rows are buffered and sent in
 batches, from a background thread every few seconds and again at exit, so a
 slow network never slows the crawl and a crash loses at most a few seconds
@@ -24,11 +27,41 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 LOGGER = logging.getLogger("price_store")
 
 ROW_FIELDS = ("date", "brand", "model", "part", "price", "price_value", "currency", "url", "status", "error")
+
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+
+
+def load_env_file(path: Path = ENV_FILE) -> None:
+    """Read KEY=VALUE lines from the .env file next to this module, if any.
+
+    This lets a plain `python dashboard.py` or a scrape on a PC use the same
+    PRICE_API_URL / PRICE_API_KEY as the live site. Variables already set in
+    the real environment win, so hosts such as Render are not affected.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        if name:
+            os.environ.setdefault(name, value)
+
+
+load_env_file()
 
 
 class RemotePriceStore:
