@@ -1,5 +1,0 @@
-node_modules/
-*.sqlite3
-*.csv
-.cashify_token.json
-.git/
