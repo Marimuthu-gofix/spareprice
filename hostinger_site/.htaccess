@@ -1,7 +1,6 @@
 # Spareprice on Hostinger shared hosting (the contents of public_html).
 # The PHP dashboard is index.php; the price API keeps its own rules in api/.
 RewriteEngine On
-Options -Indexes
 
 # Routes the page script calls by path.
 RewriteRule ^job-status/?$ index.php?action=job-status [L,QSA]

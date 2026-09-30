@@ -14,4 +14,10 @@ return [
     // in the GitHub Actions secret, and in the .env file on your PC.
     // Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
     'api_key' => 'change-me',
+
+    // Optional: run the dashboard's scrape buttons on GitHub Actions.
+    // A fine-grained GitHub token for this repository with the permission
+    // "Actions: Read and write". Without it the buttons use the Render app.
+    // 'github_token' => 'github_pat_...',
+    // 'github_repo' => 'Marimuthu-gofix/spareprice',
 ];

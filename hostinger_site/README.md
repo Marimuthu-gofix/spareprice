@@ -42,12 +42,34 @@ Then open the site. The dashboard should load with the pill
 ## Settings
 
 Everything comes from `api/config.php`: the database and the `api_key`.
-Optional: `'scraper_url' => 'https://...'` to forward the scrape buttons
-somewhere other than `https://spareprice.onrender.com`.
 
-The first press of a scrape button after a quiet period takes up to a minute
-while the free Render app wakes up. When the job finishes the page reloads
-with the new prices.
+### Where the scrape buttons run
+
+**GitHub Actions (recommended).** Add a token to `api/config.php` and every
+scrape button starts the repository's "Weekly full scrape" workflow for the
+chosen brand and model. The page shows the run's progress and reloads when
+it finishes. There is no memory limit, so "Check All Prices" runs the full
+scrape of every brand.
+
+```php
+'github_token' => 'github_pat_...',
+'github_repo' => 'Marimuthu-gofix/spareprice',
+```
+
+Create the token on GitHub: Settings > Developer settings > Personal access
+tokens > Fine-grained tokens > Generate new token. Repository access: only
+this repository. Permissions: **Actions: Read and write**. Copy the token
+into `config.php` on the server only; it never goes into git.
+
+A run takes a minute or two to start, because GitHub prepares a fresh
+machine and installs Chromium each time. Only one scrape runs at a time.
+Each run uses GitHub Actions minutes (about 2,000 free a month on a private
+repository).
+
+**Render app (fallback).** Without `github_token` the buttons are forwarded
+to `https://spareprice.onrender.com`, or to `'scraper_url' => 'https://...'`
+if set. The first press after a quiet period takes up to a minute while the
+free Render app wakes up, and a full scrape can exceed its memory.
 
 The dashboard caches the computed price list in `php/cache/` and refreshes
 it whenever the table changes, so a page load is one small query.

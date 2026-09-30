@@ -78,22 +78,32 @@ try {
                 header('Location: index.php');
                 break;
             }
-            $form = [];
+            $brand = 'all';
+            $model = '';
             if ($action === 'discover-scope') {
                 $brand = strtolower(trim((string) ($_POST['scrape_brand'] ?? ''))) ?: 'all';
-                $form = ['scrape_brand' => in_array($brand, SP_SCRAPE_BRANDS, true) ? $brand : 'all', 'scrape_model' => trim((string) ($_POST['scrape_model'] ?? ''))];
+                $brand = in_array($brand, SP_SCRAPE_BRANDS, true) ? $brand : 'all';
+                $model = trim((string) ($_POST['scrape_model'] ?? ''));
             }
-            [$status, $state] = sp_proxy_job('/' . $action, 'POST', $form);
+            $github = sp_github_config();
+            if ($github) {
+                // Every button starts the GitHub workflow; "Check All Prices" is a full scrape.
+                [$status, $state] = sp_start_github_job($github, $brand, $model);
+            } else {
+                $form = $action === 'discover-scope' ? ['scrape_brand' => $brand, 'scrape_model' => $model] : [];
+                [$status, $state] = sp_proxy_job('/' . $action, 'POST', $form);
+            }
             if (sp_wants_json()) {
-                sp_send_json($status, $state);
+                sp_send_json($status, sp_public_job_state($state));
             } else {
                 header('Location: index.php');
             }
             break;
 
         case 'job-status':
-            [$status, $state] = sp_proxy_job('/job-status', 'GET');
-            sp_send_json($status, $state);
+            $github = sp_github_config();
+            [$status, $state] = $github ? sp_refresh_github_job($github) : sp_proxy_job('/job-status', 'GET');
+            sp_send_json($status, sp_public_job_state($state));
             break;
 
         default:
