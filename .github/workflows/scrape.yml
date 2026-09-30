@@ -77,7 +77,8 @@ jobs:
 
       - name: Show what the store holds now
         if: always()
-        run: curl -fsS -H "X-API-Key: $PRICE_API_KEY" "$PRICE_API_URL/status" || true
+        run: |
+          curl -fsS -H "X-API-Key: $PRICE_API_KEY" "$PRICE_API_URL/status" || true
 
       # A copy of this run's rows, kept two weeks, in case the store was down.
       - name: Keep this run's rows as a backup
