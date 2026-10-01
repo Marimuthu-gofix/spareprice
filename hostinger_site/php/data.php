@@ -124,6 +124,13 @@ function sp_local_date($value): string
     return $date ? $date->setTimezone(new DateTimeZone(SP_DISPLAY_TIMEZONE))->format('d M Y, h:i A') : (string) ($value ?? '');
 }
 
+/** "30 Sep, 06:03 PM" in India time, for tight spaces. */
+function sp_local_date_short($value): string
+{
+    $date = sp_parse_iso($value);
+    return $date ? $date->setTimezone(new DateTimeZone(SP_DISPLAY_TIMEZONE))->format('d M, h:i A') : (string) ($value ?? '');
+}
+
 function sp_local_day($value): string
 {
     $date = $value instanceof DateTimeInterface ? $value : sp_parse_iso($value);
@@ -337,6 +344,38 @@ function sp_attach_competitor_prices(array &$latest): void
     unset($row);
 }
 
+/**
+ * The most recent scrape: how many prices it refreshed, and when. Counting
+ * back from the newest price, rows belong to the same scrape for as long as
+ * consecutive check times are less than $gapMinutes apart.
+ */
+function sp_last_update(array $latest, int $gapMinutes = 15): array
+{
+    $stamps = [];
+    $newestDate = null;
+    foreach ($latest as $row) {
+        $time = strtotime((string) ($row['date'] ?? ''));
+        if ($time !== false) {
+            $stamps[] = $time;
+            if ($newestDate === null || $time > $newestDate[0]) {
+                $newestDate = [$time, $row['date']];
+            }
+        }
+    }
+    if (!$stamps) {
+        return ['count' => 0, 'date' => null];
+    }
+    rsort($stamps);
+    $count = 1;
+    for ($i = 1, $n = count($stamps); $i < $n; $i++) {
+        if ($stamps[$i - 1] - $stamps[$i] > $gapMinutes * 60) {
+            break;
+        }
+        $count++;
+    }
+    return ['count' => $count, 'date' => $newestDate[1]];
+}
+
 /** Tag consecutive rows sharing (brand, model) so the page can collapse them. */
 function sp_group_by_model(array $rows): array
 {
@@ -426,7 +465,7 @@ function sp_load_price_data(): array
     }
     $pdo = sp_db();
     $status = sp_status($pdo);
-    $stamp = $status['count'] . '|' . $status['max_id'];
+    $stamp = 'v2|' . $status['count'] . '|' . $status['max_id'];
     $cacheFile = SP_CACHE_DIR . '/latest.ser';
     if (is_file($cacheFile)) {
         $cached = @unserialize((string) file_get_contents($cacheFile), ['allowed_classes' => false]);
@@ -470,6 +509,7 @@ function sp_load_price_data(): array
 
     $data = [
         'stamp' => $stamp, 'source' => sp_db_label(), 'total_rows' => $status['count'], 'latest' => $latest,
+        'last_update' => sp_last_update($latest),
         'brands' => $brands, 'model_options' => $modelOptions, 'suggestions' => array_slice($suggestions, 0, 500),
     ];
     if (is_dir(SP_CACHE_DIR) || @mkdir(SP_CACHE_DIR, 0755, true)) {
@@ -635,6 +675,7 @@ function sp_load_dashboard(array $options = []): array
             'models' => count($modelKeys),
             'average_value' => $priced ? array_sum($priced) / count($priced) : null,
             'updated_today' => $updatedToday,
+            'last_update' => $cached['last_update'] ?? sp_last_update($allLatest),
         ],
         'data_source' => $cached['source'],
     ];

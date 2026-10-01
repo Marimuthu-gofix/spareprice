@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Spareprice Dashboard</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v=static_version('dashboard.css')) }}">
   </head>
   {% macro sort_header(key, label) %}
     {% set next_dir = 'asc' if (sort == key and sort_dir == 'desc') else 'desc' %}
@@ -128,6 +128,14 @@
           <div>
             <strong>{{ stats.updated_today }}</strong>
             <span>Prices updated today</span>
+          </div>
+        </article>
+        <article>
+          {{ icon('refresh') }}
+          <div>
+            <strong>{{ stats.last_update.count }}</strong>
+            <span>Prices in last update</span>
+            {% if stats.last_update.date %}<small title="{{ stats.last_update.date|localdate }}">{{ stats.last_update.date|localdate_short }}</small>{% endif %}
           </div>
         </article>
         <article>
@@ -454,6 +462,6 @@
     </aside>
 
     <script id="spareprice-series" type="application/json">{{ chart_json|safe }}</script>
-    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+    <script src="{{ url_for('static', filename='dashboard.js', v=static_version('dashboard.js')) }}"></script>
   </body>
 </html>

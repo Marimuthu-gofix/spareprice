@@ -229,22 +229,31 @@ button .icon {
   background: var(--ink);
 }
 
+/* Secondary button. Used by "Reset" (a link) and "Expand all models" (a
+   button), so it sets its own colours instead of inheriting the solid blue
+   of plain buttons or relying on white text. */
 .ghost-btn {
-  color: white;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 40px;
   padding: 0 14px;
+  border: 1px solid var(--line);
   border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
   font-weight: 700;
   font-size: 14px;
   text-decoration: none;
-  border: 1px solid transparent;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .ghost-btn:hover {
   background: #eef2f8;
+  border-color: #c7d2e3;
   color: var(--ink);
+  filter: none;
 }
 
 main {
@@ -310,6 +319,14 @@ main {
   }
 }
 
+/* When the job reports a percentage, the bar fills instead of sliding. */
+.job-bar.determinate i {
+  left: 0;
+  width: var(--job-pct, 0%);
+  animation: none;
+  transition: width 0.6s ease;
+}
+
 /* ---------- scrape toolbar ---------- */
 
 .scrape-toolbar {
@@ -343,7 +360,7 @@ main {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -351,8 +368,9 @@ main {
 .stats article {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 14px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -382,6 +400,24 @@ main {
 .stats article:nth-child(4) .icon {
   background: var(--green-soft);
   color: var(--green);
+}
+
+.stats article:nth-child(5) .icon {
+  background: #e6f6fb;
+  color: #0e7490;
+}
+
+/* Let the text wrap inside a narrow card instead of pushing the row wider. */
+.stats article > div {
+  min-width: 0;
+}
+
+.stats small {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted-2, #8a94a6);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .stats strong {
@@ -756,8 +792,19 @@ tr.expanded .expand-cell .icon {
   background: var(--blue-soft);
 }
 
-.data-table tbody tr.row-toggle.group-child td.grouped-cell {
-  opacity: 0.32;
+/* Inside an expanded model the brand and model are already in the group
+   header, so the repeated cells are left empty. They keep their place so
+   the columns stay lined up. On phones each part is its own card and still
+   shows them. */
+@media (min-width: 821px) {
+  .data-table tbody tr.row-toggle.group-child td.grouped-cell {
+    font-size: 0;
+    color: transparent;
+  }
+
+  .data-table tbody tr.row-toggle.group-child td.grouped-cell > * {
+    visibility: hidden;
+  }
 }
 
 .detail-grid {
@@ -1097,7 +1144,14 @@ a:hover {
 
 /* ---------- responsive ---------- */
 
-@media (max-width: 1080px) {
+/* Five cards share one row on desktop widths; they fold to three, then two. */
+@media (max-width: 1040px) {
+  .stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

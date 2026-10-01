@@ -150,6 +150,22 @@ def icon(name: str) -> str:
     return Markup(svg)
 
 
+@app.template_filter("localdate_short")
+def localdate_short_filter(value: str | None) -> str:
+    """'30 Sep, 06:03 PM' in India time, for tight spaces."""
+    parsed = _parse_date(value)
+    return parsed.astimezone(DISPLAY_TIMEZONE).strftime("%d %b, %I:%M %p") if parsed else (value or "-")
+
+
+@app.template_global()
+def static_version(filename: str) -> int:
+    """Change time of a static file, added to its address so browsers reload it after an update."""
+    try:
+        return int((Path(app.static_folder) / filename).stat().st_mtime)
+    except OSError:
+        return 0
+
+
 @app.template_filter("localdate")
 def localdate_filter(value: str | None) -> str:
     if not value:
@@ -672,6 +688,7 @@ def load_dashboard(
             "total_value": total_value,
             "average_value": average_value,
             "updated_today": updated_today,
+            "last_update": last_update_summary(all_latest),
             "last_success": successful_rows[0]["date"] if successful_rows else None,
         },
         "job": current_job_state(),
@@ -679,6 +696,33 @@ def load_dashboard(
         "data_source": cached.get("source", ""),
         "remote_error": cached.get("remote_error", ""),
     }
+
+
+def _parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def last_update_summary(latest_rows: Iterable[Any], gap_minutes: int = 15) -> dict[str, Any]:
+    """The most recent scrape: how many prices it refreshed, and when.
+
+    Counting back from the newest price, rows belong to the same scrape for
+    as long as consecutive check times are less than gap_minutes apart.
+    """
+    stamps = sorted((stamp for stamp in (_parse_date(row["date"]) for row in latest_rows) if stamp), reverse=True)
+    if not stamps:
+        return {"count": 0, "date": None}
+    count = 1
+    for newer, older in zip(stamps, stamps[1:]):
+        if (newer - older).total_seconds() > gap_minutes * 60:
+            break
+        count += 1
+    return {"count": count, "date": stamps[0].isoformat()}
 
 
 def _is_local_date(value: str | None, target) -> bool:

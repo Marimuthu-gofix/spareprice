@@ -37,6 +37,17 @@ function sp_send_json(int $status, $payload): void
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
+/**
+ * A style or script address that changes whenever the file does. The host
+ * lets browsers keep these files for a week, so without this a visitor goes
+ * on seeing the old look after an upload.
+ */
+function sp_asset(string $path): string
+{
+    $file = __DIR__ . '/' . $path;
+    return is_file($file) ? $path . '?v=' . filemtime($file) : $path;
+}
+
 function sp_send_download(string $filename, string $contentType, string $bytes): void
 {
     header('Content-Type: ' . $contentType);
@@ -127,8 +138,8 @@ try {
                 'history_links' => sp_pager_links($data['history_pagination'], $historyQuery, 'hpage', 'recent-checks'),
                 'urls' => [
                     'index' => 'index.php',
-                    'css' => 'public/dashboard.css',
-                    'js' => 'public/dashboard.js',
+                    'css' => sp_asset('public/dashboard.css'),
+                    'js' => sp_asset('public/dashboard.js'),
                     'models_json' => 'index.php?action=models',
                     'export_all' => sp_url('index.php?action=export.xlsx', ['scope' => 'all']),
                     'export_view' => sp_url('index.php?action=export.xlsx', ['scope' => 'view'] + $baseQuery),

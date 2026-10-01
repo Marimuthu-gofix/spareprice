@@ -35,8 +35,9 @@ to work with the local SQLite file only.
 Hostinger shared hosting runs PHP, not Python. `hostinger_api/` is the price
 store API and `hostinger_site/` is a PHP edition of the dashboard for the
 site root, reading the same MySQL table. `python hostinger_site/make_zip.py`
-builds the zip to extract into `public_html`. See
-[hostinger_site/README.md](hostinger_site/README.md). Scraping always runs
+builds a zip to extract into `public_html`, and the GitHub workflow
+`deploy-hostinger.yml` uploads the site automatically on every push that
+changes it. See [hostinger_site/README.md](hostinger_site/README.md). Scraping always runs
 in Python: on Render, on GitHub Actions or on your PC.
 
 ## Install

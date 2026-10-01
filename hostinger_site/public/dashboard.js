@@ -310,7 +310,8 @@
       state.finished_at
         ? `Finished ${formatStatusDate(state.finished_at)} | Took ${formatDurationBetween(state.started_at, state.finished_at)}`
         : formatProgress(state.progress, state.started_at),
-      state.running
+      state.running,
+      state.running && state.progress ? state.progress.percent : undefined
     );
     if (state.running) {
       window.setTimeout(pollJob, 3000);
@@ -329,11 +330,19 @@
     });
   }
 
-  function setJobStatus(message, detail, running) {
+  // percent (optional): when the job reports one, the bar fills to it;
+  // otherwise the bar slides to show that something is happening.
+  function setJobStatus(message, detail, running, percent) {
     if (!jobStatus) return;
     jobStatus.classList.toggle("running", running);
     jobStatus.dataset.running = running ? "true" : "false";
-    jobStatus.innerHTML = `<strong>${escapeHtml(message)}</strong><span>${escapeHtml(detail)}</span>`;
+    const known = percent !== undefined && percent !== null && Number.isFinite(Number(percent));
+    const width = known ? Math.max(0, Math.min(100, Number(percent))) : 0;
+    const bar = running
+      ? `<div class="job-bar${known ? " determinate" : ""}"${known ? ` style="--job-pct: ${width}%"` : ""}><i></i></div>`
+      : "";
+    jobStatus.innerHTML =
+      `<div class="job-status-text"><strong>${escapeHtml(message)}</strong><span>${escapeHtml(detail)}</span></div>${bar}`;
   }
 
   function formatStatusDate(value) {
@@ -352,11 +361,15 @@
 
   function formatProgress(progress, startedAt) {
     if (!progress) return "Still running...";
-    const parts = [`Time: ${formatElapsed(startedAt)}`];
-    parts.push(`Done: ${Number(progress.done || 0)} models`);
+    // A job that reports a percentage shows that instead of the step text.
+    const hasPercent = progress.percent !== undefined && progress.percent !== null && Number.isFinite(Number(progress.percent));
+    const parts = [];
+    if (hasPercent) parts.push(`Progress: ${Math.round(Number(progress.percent))}%`);
+    parts.push(`Time: ${formatElapsed(startedAt)}`);
+    if (!hasPercent) parts.push(`Done: ${Number(progress.done || 0)} models`);
     parts.push(`Rows saved: ${Number(progress.rows || 0)}`);
     parts.push(`Errors: ${Number(progress.errors || 0)}`);
-    if (progress.current) parts.push(`Current: ${progress.current}`);
+    if (!hasPercent && progress.current) parts.push(`Current: ${progress.current}`);
     return parts.join(" | ");
   }
 

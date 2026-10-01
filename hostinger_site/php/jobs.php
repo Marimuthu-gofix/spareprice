@@ -16,6 +16,7 @@ declare(strict_types=1);
 
 const SP_JOB_CACHE = SP_CACHE_DIR . '/job.json';
 const SP_GITHUB_DEFAULT_REPO = 'Marimuthu-gofix/spareprice';
+const SP_GITHUB_SCRAPE_STEP = 'Scrape'; // the workflow step that does the scraping
 
 function sp_default_job_state(string $message = 'Ready'): array
 {
@@ -120,17 +121,72 @@ function sp_proxy_job(string $route, string $method, array $form = []): array
 }
 
 // --------------------------------------------------------- GitHub Actions
+/**
+ * "owner/name" from whatever was typed: the short form, the repository's web
+ * address (https://github.com/owner/name/) or its clone address.
+ */
+function sp_github_repo_name(string $value): string
+{
+    $value = trim($value);
+    $value = preg_replace('#^https?://(www\.)?github\.com/#i', '', $value) ?? $value;
+    $value = preg_replace('#^git@github\.com:#i', '', $value) ?? $value;
+    $value = preg_replace('#\.git$#i', '', trim($value, " /")) ?? $value;
+    $parts = array_values(array_filter(explode('/', $value), 'strlen'));
+    if (count($parts) >= 2) {
+        return $parts[0] . '/' . $parts[1];
+    }
+    return $value !== '' ? $value : SP_GITHUB_DEFAULT_REPO;
+}
+
+/**
+ * Why GitHub refused to start the workflow, in words the owner can act on.
+ * Returns [short reason for the page, longer advice].
+ */
+function sp_github_explain_failure(array $github, int $status, string $error): array
+{
+    $badToken = ['the token is not valid', 'The token is wrong, expired or revoked. Create a new fine-grained token on GitHub and put it in github_token in api/config.php.'];
+    if ($status === 401) {
+        return $badToken;
+    }
+    if ($status === 422) {
+        return ['GitHub rejected the brand or model', $error];
+    }
+    [$repoStatus] = sp_github_api($github, 'GET', '');
+    if ($repoStatus === 401) {
+        return $badToken;
+    }
+    if ($repoStatus !== 200) {
+        return [
+            'the token cannot see the repository ' . $github['repo'],
+            'On GitHub open Settings > Developer settings > Personal access tokens > Fine-grained tokens, click the token, and under '
+            . 'Repository access choose "Only select repositories" and pick the repository. Also check github_repo in api/config.php.',
+        ];
+    }
+    [$workflowStatus] = sp_github_api($github, 'GET', '/actions/workflows/' . rawurlencode($github['workflow']));
+    if ($workflowStatus === 404) {
+        return ['the workflow ' . $github['workflow'] . ' was not found in ' . $github['repo'], 'Push .github/workflows/' . $github['workflow'] . ' to the ' . $github['ref'] . ' branch.'];
+    }
+    if ($workflowStatus !== 200 || $status === 403 || $status === 404) {
+        return [
+            'the token has no permission for Actions',
+            'On GitHub open the token (Settings > Developer settings > Personal access tokens > Fine-grained tokens), and under '
+            . 'Repository permissions set Actions to "Read and write", then save.',
+        ];
+    }
+    return [$error !== '' ? $error : 'HTTP ' . $status, $error];
+}
+
 /** GitHub settings from api/config.php, or null when no token is configured. */
 function sp_github_config(): ?array
 {
     $config = sp_config();
-    $token = trim((string) ($config['github_token'] ?? ''));
-    if ($token === '') {
+    $token = trim((string) ($config['github_token'] ?? ''), " \t\n\r\"'");
+    if ($token === '' || str_starts_with($token, 'PASTE_') || str_ends_with($token, '...')) {
         return null;
     }
     return [
         'token' => $token,
-        'repo' => trim((string) ($config['github_repo'] ?? SP_GITHUB_DEFAULT_REPO), " /"),
+        'repo' => sp_github_repo_name((string) ($config['github_repo'] ?? SP_GITHUB_DEFAULT_REPO)),
         'workflow' => trim((string) ($config['github_workflow'] ?? 'scrape.yml')),
         'ref' => trim((string) ($config['github_ref'] ?? 'main')),
         'api' => rtrim(trim((string) ($config['github_api'] ?? 'https://api.github.com')), '/'),
@@ -158,6 +214,33 @@ function sp_github_api(array $github, string $method, string $path, ?array $body
         $error = is_array($json) && isset($json['message']) ? (string) $json['message'] : 'HTTP ' . $status;
     }
     return [$status, is_array($json) ? $json : null, $error];
+}
+
+/**
+ * How many prices a scrape of this brand and model should deliver, judged by
+ * what the store holds for it now. Used to turn "rows saved" into a percentage.
+ */
+function sp_expected_rows(string $brand, string $model): int
+{
+    try {
+        $latest = sp_load_price_data()['latest'];
+    } catch (Throwable) {
+        return 1;
+    }
+    $needle = sp_clean_text($model);
+    $brandKey = sp_brand_key($brand);
+    $count = 0;
+    foreach ($latest as $row) {
+        $cashify = $row['source'] === 'Cashify';
+        if ($brand === 'cashify' ? !$cashify : ($brand !== 'all' && ($cashify || $row['brand_key'] !== $brandKey))) {
+            continue;
+        }
+        if ($needle !== '' && !str_contains(sp_clean_text($row['brand'] . ' ' . $row['model']), $needle)) {
+            continue;
+        }
+        $count++;
+    }
+    return max(1, $count);
 }
 
 function sp_store_row_count(): int
@@ -188,8 +271,9 @@ function sp_start_github_job(array $github, string $brand, string $model): array
         ['ref' => $github['ref'], 'inputs' => ['brand' => $brand, 'model' => $model]],
     );
     if ($status !== 204 && $status !== 200) {
-        $state = sp_default_job_state('GitHub did not accept the scrape request');
-        $state['output'] = $error ?: ('HTTP ' . $status);
+        [$reason, $advice] = sp_github_explain_failure($github, $status, $error);
+        $state = sp_default_job_state('GitHub did not accept the scrape request: ' . $reason);
+        $state['output'] = $advice;
         $state['started_at'] = $state['finished_at'] = gmdate('c');
         $state['returncode'] = 1;
         $state['progress']['errors'] = 1;
@@ -205,8 +289,10 @@ function sp_start_github_job(array $github, string $brand, string $model): array
     $state['started_at'] = gmdate('c');
     $state['progress']['scope'] = $message;
     $state['progress']['current'] = 'Waiting for GitHub to start the run';
+    $state['progress']['percent'] = 1;
     $state['github'] = [
         'dispatched_at' => time(), 'checked_at' => 0, 'run_id' => null, 'html_url' => null, 'rows_at_start' => sp_store_row_count(),
+        'expected_rows' => sp_expected_rows($brand, $model),
     ];
     sp_remember_job_state($state);
     return [202, $state];
@@ -233,6 +319,9 @@ function sp_refresh_github_job(array $github): array
         $state['message'] = $message;
         $state['finished_at'] = $finishedAt !== '' ? $finishedAt : gmdate('c');
         $state['progress']['current'] = '';
+        if ($code === 0) {
+            $state['progress']['percent'] = 100;
+        }
         if ($code !== 0) {
             $state['progress']['errors'] = max(1, (int) $state['progress']['errors']);
         }
@@ -266,6 +355,13 @@ function sp_refresh_github_job(array $github): array
         }
     }
 
+    // Progress as a percentage: a little while GitHub prepares the machine,
+    // then the share of the prices expected for this brand and model that
+    // have reached the store, then the closing steps.
+    $elapsed = max(0, time() - (int) $job['dispatched_at']);
+    $rows = max(0, sp_store_row_count() - (int) $job['rows_at_start']);
+    $percent = min(5, 1 + intdiv($elapsed, 10)); // waiting for the run to appear
+
     if (!empty($job['run_id']) && $state['running']) {
         [$status, $run] = sp_github_api($github, 'GET', '/actions/runs/' . $job['run_id']);
         if ($status === 200 && is_array($run)) {
@@ -277,24 +373,39 @@ function sp_refresh_github_job(array $github): array
                     (string) ($run['updated_at'] ?? ''),
                 );
             } else {
-                $step = ($run['status'] ?? '') === 'in_progress' ? 'Starting' : 'Queued on GitHub';
+                $inProgress = ($run['status'] ?? '') === 'in_progress';
+                $step = $inProgress ? 'Running' : 'Queued on GitHub';
+                $percent = $inProgress ? min(18, 8 + intdiv($elapsed, 8)) : 5; // installing Chromium
+                $scrapeDone = false;
                 [$jobsStatus, $jobs] = sp_github_api($github, 'GET', '/actions/runs/' . $job['run_id'] . '/jobs');
                 if ($jobsStatus === 200 && is_array($jobs)) {
                     foreach ($jobs['jobs'][0]['steps'] ?? [] as $candidate) {
+                        $name = (string) ($candidate['name'] ?? '');
                         if (($candidate['status'] ?? '') === 'in_progress') {
-                            $step = (string) $candidate['name'];
+                            $step = $name;
+                        }
+                        if ($name === SP_GITHUB_SCRAPE_STEP && ($candidate['status'] ?? '') === 'completed') {
+                            $scrapeDone = true;
                         }
                     }
+                }
+                if ($scrapeDone) {
+                    $percent = 97;
+                } elseif ($step === SP_GITHUB_SCRAPE_STEP) {
+                    $percent = 20 + (int) floor(75 * min(1, $rows / max(1, (int) ($job['expected_rows'] ?? 1))));
                 }
                 $state['progress']['current'] = 'GitHub: ' . $step;
             }
         }
     }
 
-    if (time() - (int) $job['dispatched_at'] > 6 * 3600 && $state['running']) {
+    if ($elapsed > 6 * 3600 && $state['running']) {
         $finish(1, 'Lost track of the scrape run on GitHub');
     }
-    $state['progress']['rows'] = max(0, sp_store_row_count() - (int) $job['rows_at_start']);
+    $state['progress']['rows'] = $rows;
+    if ($state['running']) {
+        $state['progress']['percent'] = max((int) ($state['progress']['percent'] ?? 0), $percent); // never goes backwards
+    }
     $state['github'] = $job;
     sp_remember_job_state($state);
     return [200, $state];

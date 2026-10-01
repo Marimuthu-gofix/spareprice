@@ -15,7 +15,26 @@ Scraping never happens on Hostinger. The Python scraper (Render, GitHub
 Actions or your PC) posts prices to `/api`; this site only stores and shows
 them.
 
-## Upload
+## Deploy
+
+**Automatic (git push).** The GitHub workflow
+`.github/workflows/deploy-hostinger.yml` uploads these files to the server
+whenever a push to `main` changes `hostinger_site/` or `hostinger_api/`, and
+can be run by hand from the Actions tab. It uploads only changed files and
+never touches `api/config.php` or anything else on the server. Setup, once:
+
+1. hPanel > Files > FTP Accounts: create an FTP account for the site whose
+   directory is its `public_html`, and note the host, user name and password.
+2. GitHub > repository > Settings > Secrets and variables > Actions: add the
+   secrets `FTP_SERVER` (host name or IP, without `ftp://`), `FTP_USERNAME`
+   and `FTP_PASSWORD`.
+3. Push. The run ends by checking `/api/health` and the dashboard page.
+
+If the host refuses an encrypted connection, add a repository variable
+`FTP_PROTOCOL` = `ftp`. If the FTP account's directory is not the site's
+`public_html`, set the variable `FTP_SERVER_DIR` to the right folder.
+
+**By hand (zip).**
 
 ```powershell
 python hostinger_site/make_zip.py

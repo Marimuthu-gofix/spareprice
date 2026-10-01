@@ -64,7 +64,9 @@ declare(strict_types=1);
         <div class="job-status-text">
           <strong><?= e($job['message']) ?></strong>
           <span>
-            <?php if ($job['running']): ?>
+            <?php if ($job['running'] && isset($job['progress']['percent'])): ?>
+              Progress: <?= (int) $job['progress']['percent'] ?>% | Rows saved: <?= (int) ($job['progress']['rows'] ?? 0) ?> | Errors: <?= (int) ($job['progress']['errors'] ?? 0) ?>
+            <?php elseif ($job['running']): ?>
               Time: calculating... | Done: <?= (int) ($job['progress']['done'] ?? 0) ?> models | Rows saved: <?= (int) ($job['progress']['rows'] ?? 0) ?> | Errors: <?= (int) ($job['progress']['errors'] ?? 0) ?><?php if (!empty($job['progress']['current'])): ?> | Current: <?= e($job['progress']['current']) ?><?php endif; ?>
             <?php elseif (!empty($job['started_at'])): ?>
               Started <?= e(sp_local_date($job['started_at'])) ?>
@@ -73,7 +75,11 @@ declare(strict_types=1);
             <?php endif; ?>
           </span>
         </div>
-        <?php if ($job['running']): ?><div class="job-bar"><i></i></div><?php endif; ?>
+        <?php if ($job['running'] && isset($job['progress']['percent'])): ?>
+          <div class="job-bar determinate" style="--job-pct: <?= max(0, min(100, (int) $job['progress']['percent'])) ?>%"><i></i></div>
+        <?php elseif ($job['running']): ?>
+          <div class="job-bar"><i></i></div>
+        <?php endif; ?>
       </section>
 
       <section class="scrape-toolbar">
@@ -123,6 +129,14 @@ declare(strict_types=1);
           <div>
             <strong><?= (int) $stats['updated_today'] ?></strong>
             <span>Prices updated today</span>
+          </div>
+        </article>
+        <article>
+          <?= sp_icon('refresh') ?>
+          <div>
+            <strong><?= (int) $stats['last_update']['count'] ?></strong>
+            <span>Prices in last update</span>
+            <?php if (!empty($stats['last_update']['date'])): ?><small title="<?= e(sp_local_date($stats['last_update']['date'])) ?>"><?= e(sp_local_date_short($stats['last_update']['date'])) ?></small><?php endif; ?>
           </div>
         </article>
         <article>

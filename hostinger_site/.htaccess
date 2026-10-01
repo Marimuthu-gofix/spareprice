@@ -8,4 +8,4 @@ RewriteRule ^(check-now|discover-all|discover-scope|models\.json|export\.csv|exp
 
 # PHP includes, the cache, and leftovers of older uploads are not for the browser.
 RewriteRule ^(php|src|views|scripts|node_modules)(/|$) - [F,L]
-RewriteRule ^(package(-lock)?\.json|config\.json|README\.md|HOSTINGER\.md|Dockerfile|\.env.*|\.gitignore|\.dockerignore)$ - [F,L]
+RewriteRule ^(package(-lock)?\.json|config\.json|README\.md|HOSTINGER\.md|Dockerfile|\.env.*|\.gitignore|\.dockerignore|\.spareprice-deploy-state\.json)$ - [F,L]
