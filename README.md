@@ -7,7 +7,7 @@ It uses Playwright because the referenced pages populate prices after JavaScript
 ## Scheduled scrape on GitHub Actions (free)
 
 `.github/workflows/scrape.yml` runs a full scrape of every brand on GitHub's
-own machines every Monday and Thursday at 02:00 India time and posts the
+own machines every Monday and Thursday at 07:00 India time and posts the
 prices to the Hostinger store, so no server of yours has to run Chromium.
 Setup, once:
 

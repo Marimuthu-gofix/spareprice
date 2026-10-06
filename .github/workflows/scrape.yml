@@ -13,9 +13,9 @@ name: Full scrape
 
 on:
   schedule:
-    # Every Monday and Thursday at 02:00 India time. GitHub's cron is in UTC,
-    # so that is Sunday and Wednesday at 20:30 UTC (0 = Sunday, 3 = Wednesday).
-    - cron: "30 20 * * 0,3"
+    # Every Monday and Thursday at 07:00 India time. GitHub's cron is in UTC,
+    # so that is 01:30 UTC the same days (1 = Monday, 4 = Thursday).
+    - cron: "30 1 * * 1,4"
   workflow_dispatch:
     inputs:
       brand:
