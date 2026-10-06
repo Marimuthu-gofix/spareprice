@@ -58,6 +58,34 @@ Then open the site. The dashboard should load with the pill
 | `https://scrape.gofix.info/api/SETUP.txt` | 403 Forbidden |
 | `https://scrape.gofix.info/php/data.php` | 403 Forbidden |
 
+## Sign-in and roles
+
+Nobody sees the dashboard without signing in.
+
+| Role | Can do |
+|---|---|
+| Admin | See prices, download Excel, start scrapes, manage accounts |
+| User | See prices and download Excel |
+
+- **First visit.** With no accounts yet, the site shows "Create the admin
+  account". It asks for a setup code, which is the `api_key` from
+  `api/config.php`, so only the site's owner can claim it. Do this right
+  after uploading.
+- **More people.** The admin opens the user menu (top right) > Accounts to
+  add people, switch them between Admin and User, set a new password for
+  them, or delete them. The last admin cannot be removed or demoted.
+- **Own password.** Everyone can change theirs under the user menu >
+  Change password.
+- Accounts are rows in the `dashboard_users` table of the same database;
+  passwords are stored as hashes only. A session ends after 8 hours without
+  use. Eight wrong passwords in ten minutes pause sign-in for that visitor.
+- The price API in `api/` is separate: scrapers keep using the `X-API-Key`
+  header and are not affected.
+
+Forgot the only admin password? In phpMyAdmin delete the admin's row from
+`dashboard_users`. With no admin left, the next visit offers the setup page
+again, protected by the same setup code.
+
 ## Settings
 
 Everything comes from `api/config.php`: the database and the `api_key`.
@@ -65,7 +93,7 @@ Everything comes from `api/config.php`: the database and the `api_key`.
 ### Where the scrape buttons run
 
 **GitHub Actions (recommended).** Add a token to `api/config.php` and every
-scrape button starts the repository's "Weekly full scrape" workflow for the
+scrape button starts the repository's "Full scrape" workflow for the
 chosen brand and model. The page shows the run's progress and reloads when
 it finishes. There is no memory limit, so "Check All Prices" runs the full
 scrape of every brand.

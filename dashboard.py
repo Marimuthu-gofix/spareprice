@@ -150,6 +150,12 @@ def icon(name: str) -> str:
     return Markup(svg)
 
 
+@app.route("/favicon.ico")
+def favicon() -> Response:
+    """Browsers ask for this address on their own."""
+    return app.send_static_file("favicon.ico")
+
+
 @app.template_filter("localdate_short")
 def localdate_short_filter(value: str | None) -> str:
     """'30 Sep, 06:03 PM' in India time, for tight spaces."""

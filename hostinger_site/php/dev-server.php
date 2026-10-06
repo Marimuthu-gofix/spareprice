@@ -16,6 +16,11 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $api = is_file($root . '/api/index.php') ? $root . '/api' : dirname($root) . '/hostinger_api';
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+if ($path === '/favicon.ico') {
+    header('Content-Type: image/x-icon');
+    readfile($root . '/public/favicon.ico');
+    return true;
+}
 if ($path !== '/' && is_file($root . $path) && !preg_match('#^/php/#', $path)) {
     return false;
 }

@@ -3,17 +3,23 @@
  * Spareprice dashboard for Hostinger shared hosting (PHP + MySQL).
  *
  * Upload this folder to public_html: the dashboard runs at / and the price
- * API at /api (api/index.php), sharing api/config.php. Scrape buttons are
- * forwarded to the Render app (see php/jobs.php).
+ * API at /api (api/index.php), sharing api/config.php.
  *
- * Routes (see .htaccess):
+ * Everyone signs in (php/auth.php). An admin sees prices, downloads Excel,
+ * starts scrapes and manages accounts; a user sees prices and downloads
+ * Excel. The very first visit creates the admin account.
+ *
+ * Routes (see .htaccess); every one also works as index.php?action=<name>:
  *   /                              the dashboard
+ *   ?action=login | logout         sign in and out
+ *   ?action=setup                  first visit only: create the admin
+ *   ?action=account                change your own password
+ *   ?action=users                  admin: add, change and delete accounts
  *   /models.json                   model names for the export picker
  *   /export.csv, /export.xlsx      exports (scope=all|view|model)
  *   /check-now, /discover-all,
- *   /discover-scope (POST)         start a scrape on the scraper host
- *   /job-status                    progress of that scrape
- * Every route also works as index.php?action=<name>.
+ *   /discover-scope (POST)         admin: start a scrape (php/jobs.php)
+ *   /job-status                    admin: progress of that scrape
  */
 declare(strict_types=1);
 
@@ -21,8 +27,11 @@ require __DIR__ . '/php/data.php';
 require __DIR__ . '/php/render.php';
 require __DIR__ . '/php/exports.php';
 require __DIR__ . '/php/jobs.php';
+require __DIR__ . '/php/auth.php';
+require __DIR__ . '/php/auth_views.php';
 
 const SP_SCRAPE_BRANDS = ['all', 'apple', 'samsung', 'oppo', 'realme', 'oneplus', 'mi', 'vivo', 'iqoo', 'motorola', 'cashify'];
+const SP_SCRAPE_ACTIONS = ['check-now', 'discover-all', 'discover-scope'];
 
 function sp_wants_json(): bool
 {
@@ -35,6 +44,23 @@ function sp_send_json(int $status, $payload): void
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function sp_send_html(string $html, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    header('X-Frame-Options: DENY');
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: same-origin');
+    echo $html;
+}
+
+function sp_redirect(string $to): void
+{
+    header('Cache-Control: no-store');
+    header('Location: ' . $to);
 }
 
 /**
@@ -53,15 +79,162 @@ function sp_send_download(string $filename, string $contentType, string $bytes):
     header('Content-Type: ' . $contentType);
     header('Content-Disposition: attachment; filename=' . $filename);
     header('Content-Length: ' . strlen($bytes));
+    header('Cache-Control: no-store');
     echo $bytes;
 }
 
 $action = strtolower(trim((string) ($_GET['action'] ?? '')));
 $action = str_replace('.json', '', $action);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$isPost = $method === 'POST';
+// Routes the page script calls and expects JSON back from.
+$isDataRoute = sp_wants_json() || in_array($action, ['models', 'job-status'], true);
 
 try {
+    sp_session_start();
+
+    // ------------------------------------- first visit: nobody can administer yet
+    // (also the way back in if the admin row is ever deleted in phpMyAdmin)
+    if (sp_admin_count() === 0) {
+        if ($isDataRoute) {
+            sp_send_json(401, ['error' => 'The site has no accounts yet. Open it in a browser to create the admin.']);
+            return;
+        }
+        if ($action === 'setup' && $isPost) {
+            $username = (string) ($_POST['username'] ?? '');
+            $password = (string) ($_POST['password'] ?? '');
+            $problem = null;
+            if (!sp_csrf_ok()) {
+                $problem = 'The form expired. Please try again.';
+            } elseif (!hash_equals((string) (sp_config()['api_key'] ?? ''), (string) ($_POST['setup_code'] ?? ''))) {
+                usleep(400000);
+                $problem = 'The setup code is not the api_key from api/config.php.';
+            } elseif ($password !== (string) ($_POST['password2'] ?? '')) {
+                $problem = 'The two passwords are not the same.';
+            } else {
+                $problem = sp_create_user($username, $password, 'admin');
+            }
+            if ($problem === null) {
+                sp_sign_in(sp_user_by_name($username));
+                sp_flash('ok', 'The admin account is ready. Add other people under Accounts.');
+                sp_redirect('index.php');
+                return;
+            }
+            sp_send_html(sp_setup_page(['type' => 'error', 'text' => $problem], $username));
+            return;
+        }
+        sp_send_html(sp_setup_page(sp_take_flash()));
+        return;
+    }
+    if ($action === 'setup') {
+        sp_redirect('index.php');
+        return;
+    }
+
+    $user = sp_current_user();
+
+    // ---------------------------------------------------------------- sign in
+    if ($action === 'login') {
+        if ($user) {
+            sp_redirect('index.php');
+            return;
+        }
+        if ($isPost) {
+            $username = (string) ($_POST['username'] ?? '');
+            if (!sp_csrf_ok()) {
+                sp_send_html(sp_login_page(['type' => 'error', 'text' => 'The form expired. Please try again.'], $username));
+                return;
+            }
+            [$account, $message] = sp_try_login($username, (string) ($_POST['password'] ?? ''));
+            if ($account) {
+                sp_sign_in($account);
+                sp_redirect('index.php');
+                return;
+            }
+            sp_send_html(sp_login_page(['type' => 'error', 'text' => $message], $username), 401);
+            return;
+        }
+        sp_send_html(sp_login_page(sp_take_flash()));
+        return;
+    }
+
+    if (!$user) {
+        if ($isDataRoute) {
+            sp_send_json(401, ['error' => 'Sign in first.', 'message' => 'Signed out. Reload the page and sign in.', 'running' => false]);
+        } else {
+            sp_redirect('index.php?action=login');
+        }
+        return;
+    }
+
+    // Every form a signed-in person submits must carry the page's token.
+    if ($isPost && !sp_csrf_ok()) {
+        if ($isDataRoute) {
+            sp_send_json(403, ['error' => 'The page is out of date. Reload it and try again.', 'message' => 'The page is out of date. Reload it and try again.', 'running' => false]);
+        } else {
+            sp_flash('error', 'The form expired. Please try again.');
+            sp_redirect('index.php');
+        }
+        return;
+    }
+
+    $isAdmin = sp_is_admin();
+
     switch ($action) {
+        case 'logout':
+            if ($isPost) {
+                sp_sign_out();
+            }
+            sp_redirect('index.php?action=login');
+            break;
+
+        case 'account':
+            if ($isPost) {
+                $stored = sp_user_by_name($user['username']);
+                $password = (string) ($_POST['password'] ?? '');
+                if (!$stored || !password_verify((string) ($_POST['current'] ?? ''), $stored['password_hash'])) {
+                    usleep(400000);
+                    sp_flash('error', 'The current password is not right.');
+                } elseif ($password !== (string) ($_POST['password2'] ?? '')) {
+                    sp_flash('error', 'The two new passwords are not the same.');
+                } elseif (($problem = sp_set_password((int) $user['id'], $password)) !== null) {
+                    sp_flash('error', $problem);
+                } else {
+                    session_regenerate_id(true);
+                    sp_flash('ok', 'Your password is changed.');
+                }
+                sp_redirect('index.php?action=account');
+                break;
+            }
+            sp_send_html(sp_account_page($user, sp_take_flash()));
+            break;
+
+        case 'users':
+            if (!$isAdmin) {
+                sp_flash('error', 'Only an admin can manage accounts.');
+                sp_redirect('index.php');
+                break;
+            }
+            if ($isPost) {
+                $id = (int) ($_POST['id'] ?? 0);
+                $problem = match ((string) ($_POST['op'] ?? '')) {
+                    'create' => sp_create_user((string) ($_POST['username'] ?? ''), (string) ($_POST['password'] ?? ''), (string) ($_POST['role'] ?? 'user')),
+                    'role' => sp_set_role($id, (string) ($_POST['role'] ?? '')),
+                    'password' => sp_user_by_id($id) ? sp_set_password($id, (string) ($_POST['password'] ?? '')) : 'That account does not exist.',
+                    'delete' => sp_delete_user($id, (int) $user['id']),
+                    default => 'Unknown request.',
+                };
+                $done = [
+                    'create' => 'The account was added.', 'role' => 'The role was changed.',
+                    'password' => 'The password was changed.', 'delete' => 'The account was deleted.',
+                ][(string) ($_POST['op'] ?? '')] ?? 'Done.';
+                sp_flash($problem === null ? 'ok' : 'error', $problem ?? $done);
+                sp_redirect('index.php?action=users');
+                break;
+            }
+            sp_send_html(sp_users_page($user, sp_all_users(), sp_take_flash()));
+            break;
+
         case 'models':
             sp_send_json(200, sp_load_price_data()['model_options']);
             break;
@@ -85,8 +258,12 @@ try {
         case 'check-now':
         case 'discover-all':
         case 'discover-scope':
-            if ($method !== 'POST') {
-                header('Location: index.php');
+            if (!$isAdmin) {
+                sp_send_json(403, ['error' => 'Only an admin can start a scrape.', 'message' => 'Only an admin can start a scrape.', 'running' => false]);
+                break;
+            }
+            if (!$isPost) {
+                sp_redirect('index.php');
                 break;
             }
             $brand = 'all';
@@ -107,11 +284,15 @@ try {
             if (sp_wants_json()) {
                 sp_send_json($status, sp_public_job_state($state));
             } else {
-                header('Location: index.php');
+                sp_redirect('index.php');
             }
             break;
 
         case 'job-status':
+            if (!$isAdmin) {
+                sp_send_json(403, ['error' => 'Only an admin can see scrape progress.', 'message' => 'Only an admin can see scrape progress.', 'running' => false]);
+                break;
+            }
             $github = sp_github_config();
             [$status, $state] = $github ? sp_refresh_github_job($github) : sp_proxy_job('/job-status', 'GET');
             sp_send_json($status, sp_public_job_state($state));
@@ -127,9 +308,12 @@ try {
             $baseQuery = sp_build_query($filters);
             $historyQuery = sp_build_query($filters, ['page' => $data['pagination']['page']]);
             unset($historyQuery['hpage']);
-            header('Cache-Control: no-store');
-            echo sp_render_page($data + [
-                'job' => sp_job_state(),
+            sp_send_html(sp_render_page($data + [
+                'job' => $isAdmin ? sp_job_state() : sp_default_job_state(),
+                'current_user' => $user,
+                'can_scrape' => $isAdmin,
+                'csrf' => sp_csrf_token(),
+                'flash' => sp_take_flash(),
                 'search' => $filters['search'],
                 'selected_per_page' => $data['pagination']['per_page'],
                 'active_filters' => sp_active_filters($filters),
@@ -146,8 +330,11 @@ try {
                     'export_base' => 'index.php',
                     'check_now' => 'index.php?action=check-now',
                     'discover_scope' => 'index.php?action=discover-scope',
+                    'users' => 'index.php?action=users',
+                    'account' => 'index.php?action=account',
+                    'logout' => 'index.php?action=logout',
                 ],
-            ]);
+            ]));
     }
 } catch (Throwable $error) {
     http_response_code(500);

@@ -2,6 +2,9 @@
 # The PHP dashboard is index.php; the price API keeps its own rules in api/.
 RewriteEngine On
 
+# Browsers ask for /favicon.ico on their own; it lives with the other assets.
+RewriteRule ^favicon\.ico$ public/favicon.ico [L]
+
 # Routes the page script calls by path.
 RewriteRule ^job-status/?$ index.php?action=job-status [L,QSA]
 RewriteRule ^(check-now|discover-all|discover-scope|models\.json|export\.csv|export\.xlsx)/?$ index.php?action=$1 [L,QSA]

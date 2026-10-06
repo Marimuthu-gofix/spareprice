@@ -1,4 +1,4 @@
-# Weekly full scrape on GitHub's machines (free), posting every price to the
+# Full scrape on GitHub's machines (free), twice a week, posting every price to the
 # Hostinger store. Nothing is kept on the runner: the rows go to
 # PRICE_API_URL as they are scraped, exactly like the Render app does.
 #
@@ -7,14 +7,15 @@
 #   PRICE_API_URL = https://scrape.gofix.info/api
 #   PRICE_API_KEY = the api_key from api/config.php on Hostinger
 #
-# Run it by hand any time: Actions tab > "Weekly full scrape" > Run workflow,
+# Run it by hand any time: Actions tab > "Full scrape" > Run workflow,
 # optionally for one brand or one model.
-name: Weekly full scrape
+name: Full scrape
 
 on:
   schedule:
-    # Every Sunday at 02:00 India time. GitHub's cron is in UTC: Saturday 20:30 UTC.
-    - cron: "30 20 * * 6"
+    # Every Monday and Thursday at 02:00 India time. GitHub's cron is in UTC,
+    # so that is Sunday and Wednesday at 20:30 UTC (0 = Sunday, 3 = Wednesday).
+    - cron: "30 20 * * 0,3"
   workflow_dispatch:
     inputs:
       brand:

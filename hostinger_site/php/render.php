@@ -30,12 +30,21 @@ const SP_ICONS = [
     'asc' => '<path d="m6 15 6-6 6 6"/>',
     'desc' => '<path d="m6 9 6 6 6-6"/>',
     'sort-none' => '<path d="m8 9 4-4 4 4M8 15l4 4 4-4" opacity="0.4"/>',
+    'user' => '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
 ];
 
 function sp_icon(string $name): string
 {
     $body = SP_ICONS[$name] ?? SP_ICONS['dot'];
     return '<svg class="icon icon-' . e($name) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $body . '</svg>';
+}
+
+/** The browser-tab icon, for the <head> of every page. */
+function sp_favicon_links(): string
+{
+    return '<link rel="icon" type="image/svg+xml" href="' . e(sp_asset('public/favicon.svg')) . '">' . "\n    "
+        . '<link rel="icon" type="image/png" sizes="32x32" href="' . e(sp_asset('public/favicon-32.png')) . '">' . "\n    "
+        . '<link rel="apple-touch-icon" href="' . e(sp_asset('public/apple-touch-icon.png')) . '">';
 }
 
 function sp_positive_int($value, int $fallback): int

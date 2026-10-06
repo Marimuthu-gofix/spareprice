@@ -4,6 +4,7 @@ declare(strict_types=1);
 /** @var array $job, $stats, $pagination, $history_pagination, $latest, $history, $brands, $selected_brands, $per_page_options, $history_per_page_options, $suggestions, $active_filters, $sort_headers, $latest_links, $history_links, $urls */
 /** @var string $search, $sort, $sort_dir, $selected_status, $data_source */
 /** @var int $selected_per_page */
+/** @var array $current_user  the signed-in account; @var bool $can_scrape  true for an admin; @var string $csrf; @var ?array $flash */
 ?>
 <!doctype html>
 <html lang="en">
@@ -11,6 +12,8 @@ declare(strict_types=1);
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Spareprice Dashboard</title>
+    <?= sp_favicon_links() ?>
+
     <link rel="stylesheet" href="<?= e($urls['css']) ?>">
   </head>
   <body>
@@ -56,10 +59,42 @@ declare(strict_types=1);
           Hostinger (live)
           &middot; <?= str_starts_with($data_source, 'MySQL') ? 'MySQL' : 'SQLite file' ?>
         </span>
+        <details class="export-menu user-menu">
+          <summary class="icon-btn" title="Signed in as <?= e($current_user['username']) ?>">
+            <?= sp_icon('user') ?>
+            <span><?= e($current_user['username']) ?></span>
+            <?= sp_icon('chevron') ?>
+          </summary>
+          <div class="export-panel">
+            <div class="user-menu-who">
+              <strong><?= e($current_user['username']) ?></strong>
+              <span class="role-tag role-<?= e($current_user['role']) ?>"><?= e(SP_ROLES[$current_user['role']] ?? $current_user['role']) ?></span>
+            </div>
+            <?php if ($can_scrape): ?>
+              <a class="export-option" href="<?= e($urls['users']) ?>">
+                <strong>Accounts</strong>
+                <span>Add people, change roles and passwords</span>
+              </a>
+            <?php endif; ?>
+            <a class="export-option" href="<?= e($urls['account']) ?>">
+              <strong>Change password</strong>
+              <span>Set a new password for this account</span>
+            </a>
+            <form method="post" action="<?= e($urls['logout']) ?>" class="logout-form">
+              <input type="hidden" name="csrf" value="<?= e($csrf) ?>">
+              <button type="submit">Sign out</button>
+            </form>
+          </div>
+        </details>
       </div>
     </header>
 
     <main>
+      <?php if (!empty($flash['text'])): ?>
+        <div class="auth-alert <?= ($flash['type'] ?? '') === 'ok' ? 'ok' : 'error' ?>" role="alert"><?= e($flash['text']) ?></div>
+      <?php endif; ?>
+
+      <?php if ($can_scrape): ?>
       <section id="jobStatus" class="job-status <?= $job['running'] ? 'running' : '' ?>" data-running="<?= $job['running'] ? 'true' : 'false' ?>">
         <div class="job-status-text">
           <strong><?= e($job['message']) ?></strong>
@@ -84,11 +119,13 @@ declare(strict_types=1);
 
       <section class="scrape-toolbar">
         <form action="<?= e($urls['check_now']) ?>" method="post">
+          <input type="hidden" name="csrf" value="<?= e($csrf) ?>">
           <button data-job-button data-idle-label="Check All Prices" data-running-label="Checking..." data-start-label="Checking all configured devices..." id="checkAllButton" class="primary-action" type="submit" <?= $job['running'] ? 'disabled' : '' ?>>
             <?= sp_icon('play') ?> <?= $job['running'] && str_starts_with((string) $job['message'], 'Checking') ? 'Checking...' : 'Check All Prices' ?>
           </button>
         </form>
         <form action="<?= e($urls['discover_scope']) ?>" method="post" class="scope-form">
+          <input type="hidden" name="csrf" value="<?= e($csrf) ?>">
           <select name="scrape_brand" aria-label="Scrape brand">
             <option value="all">All brands</option>
             <option value="apple">Apple</option>
@@ -108,6 +145,7 @@ declare(strict_types=1);
           </button>
         </form>
       </section>
+      <?php endif; ?>
 
       <section class="stats" aria-label="Dashboard summary">
         <article>

@@ -431,3 +431,23 @@
     }
   });
 })();
+
+// Header dropdowns (export, user): only one open at a time, and a click
+// anywhere else closes them.
+(function () {
+  const menus = [...document.querySelectorAll("details.export-menu")];
+  if (!menus.length) return;
+  menus.forEach((menu) => {
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      menus.forEach((other) => {
+        if (other !== menu) other.open = false;
+      });
+    });
+  });
+  document.addEventListener("click", (event) => {
+    menus.forEach((menu) => {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    });
+  });
+})();
